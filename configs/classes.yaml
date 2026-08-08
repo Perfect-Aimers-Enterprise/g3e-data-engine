@@ -1,0 +1,43 @@
+# g3e-data-engine — Class Definitions (v1)
+#
+# DO NOT reorder or remove existing entries once a dataset has been released —
+# `id` values are baked into exported labels (YOLO/COCO). To add a class,
+# append it at the end with the next free id. See DATASET_SPEC.md.
+#
+# priority_tier: lower number = higher priority = gets more of the download
+# budget. Tiers are intentionally coarse (1-4) rather than per-class weights,
+# so it's easy to reason about ("all safety-critical classes are tier 1").
+version: "1.0.0"
+classes:
+  - name: person
+    id: 0
+    priority_tier: 1
+    note: "Safety-critical. Always over-represented relative to raw source frequency."
+  - name: fire
+    id: 1
+    priority_tier: 1
+    note: "Safety-critical, rare in general datasets — needs boosting."
+  - name: gun
+    id: 2
+    priority_tier: 1
+    note: "Safety-critical, rare in general datasets — needs boosting."
+  - name: smoke
+    id: 3
+    priority_tier: 2
+    note: "Often co-occurs with fire; slightly lower tier since easier to source alongside fire."
+  - name: knife
+    id: 4
+    priority_tier: 2
+    note: "Safety-relevant, moderately rare."
+  - name: car
+    id: 5
+    priority_tier: 3
+    note: "Abundant in general-purpose datasets (COCO etc)."
+  - name: dog
+    id: 6
+    priority_tier: 4
+    note: "Abundant, non-safety-critical for G3E's use case."
+  - name: cat
+    id: 7
+    priority_tier: 4
+    note: "Abundant, non-safety-critical for G3E's use case."

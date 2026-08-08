@@ -1,0 +1,24 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+
+# Never commit raw or processed image/label data — this repo is code + config only.
+datasets/raw/*
+datasets/processed/*
+datasets/releases/*
+!datasets/raw/.gitkeep
+!datasets/processed/.gitkeep
+!datasets/releases/.gitkeep
+
+metadata/metadata.json
+metadata/stats.json
+metadata/versions.json
+
+.env
+.DS_Store
+.pytest_cache/
+.mypy_cache/

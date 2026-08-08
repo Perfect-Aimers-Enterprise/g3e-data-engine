@@ -1,0 +1,35 @@
+# g3e-data-engine — Dataset Sources
+#
+# Each source declares which classes it can supply and a HARD per-source cap
+# (max_images) so v1 never balloons into a multi-hundred-GB download by
+# accident. Raise these caps deliberately, not by default.
+sources:
+  coco:
+    enabled: true
+    kind: huggingface        # downloader/registry key
+    hf_repo: "detection-datasets/coco"
+    classes: [person, car, dog, cat]
+    max_images: 4000
+    license: "CC BY 4.0"
+
+  weapons:
+    enabled: true
+    kind: huggingface
+    hf_repo: ""               # fill in with the actual dataset repo you choose
+    classes: [gun, knife]
+    max_images: 2000
+    license: "TBD — verify before enabling"
+
+  fire_smoke:
+    enabled: true
+    kind: huggingface
+    hf_repo: ""               # fill in with the actual dataset repo you choose
+    classes: [fire, smoke]
+    max_images: 2000
+    license: "TBD — verify before enabling"
+
+# Global safety valve. The pipeline will refuse to schedule more than this
+# many total images across ALL sources in a single run, regardless of what
+# the per-source caps above add up to. This is the number to raise when you
+# outgrow v1 — do it consciously, on a machine with the disk/bandwidth for it.
+global_max_images: 8000

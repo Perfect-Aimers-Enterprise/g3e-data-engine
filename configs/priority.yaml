@@ -1,0 +1,25 @@
+# g3e-data-engine — Download Priority / Budget Allocation
+#
+# This is the file that answers: "when we can't download everything, what
+# gets downloaded first?"
+#
+# tier_weights: relative weight per priority tier (from classes.yaml).
+# A class in tier 1 gets `tier_weights[1]` "shares" of the total image
+# budget; a class in tier 4 gets `tier_weights[4]` shares. Budget is split
+# proportionally to shares, then capped per-class by `max_per_class` and by
+# each source's own max_images in datasets.yaml.
+budget:
+  total_images: 6000          # overall v1 ceiling (<= global_max_images in datasets.yaml)
+  max_per_class: 2500         # no single class can eat the whole budget
+  min_per_class: 150          # try to guarantee at least this many per class if available
+
+tier_weights:
+  1: 4
+  2: 3
+  3: 2
+  4: 1
+
+# Optional per-run overrides. Anything passed programmatically (see
+# core/priority.py -> PriorityAllocator, or POST /pipeline/run in the API)
+# takes precedence over this file. This file is just the default.
+overrides: {}

@@ -1,0 +1,21 @@
+# g3e-data-engine — Processing thresholds
+image:
+  min_width: 640
+  min_height: 640
+  blur_threshold: 90        # Laplacian variance below this => rejected as blurry
+  max_brightness: 250
+  min_brightness: 35
+
+duplicates:
+  enabled: true
+  method: phash              # perceptual hash
+  hamming_distance_threshold: 5
+
+labels:
+  remove_empty: false        # keep background/negative images with no boxes
+
+split:
+  train: 0.8
+  val: 0.1
+  test: 0.1
+  seed: 42
