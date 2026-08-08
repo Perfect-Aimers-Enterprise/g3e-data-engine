@@ -37,6 +37,15 @@ class RunPipelineRequest(BaseModel):
     priority_overrides: dict[str, float] = Field(default_factory=dict)
     available_by_class: dict[str, int] = Field(default_factory=dict)
     export: bool = False
+    upload_to_hf: str | None = Field(
+        default=None,
+        description="Hugging Face dataset repo id, e.g. 'your-org/g3e-vision-dataset'. "
+        "Requires export=true and a HF token with write access (see README 'Credentials'). "
+        "Uploading never happens unless this is set explicitly.",
+    )
+    hf_private: bool = Field(
+        default=True, description="Whether the uploaded HF dataset repo should be private."
+    )
 
 
 class RunPipelineResponse(BaseModel):
@@ -47,3 +56,4 @@ class RunPipelineResponse(BaseModel):
     duplicates_removed: int | None = None
     split_counts: dict[str, int] | None = None
     stats: dict | None = None
+    upload_url: str | None = None

@@ -9,5 +9,6 @@ from g3e_data_engine.downloader.base import Downloader, DownloadRequest, Downloa
 
 # Self-registering implementations:
 from g3e_data_engine.downloader import hf_downloader  # noqa: F401
+from g3e_data_engine.downloader import roboflow_downloader  # noqa: F401
 
 __all__ = ["Downloader", "DownloadRequest", "DownloadedImage", "get_downloader"]

@@ -5,29 +5,54 @@ v1 — they're here so "why isn't X done yet" has an answer, and so future-you
 (or a contributor) doesn't have to guess whether something was forgotten or
 intentionally deferred.
 
+## Done since initial v1 draft
+
+- [x] **Credentials system** (`core/credentials.py`) — env-var based token
+  lookup (`HF_TOKEN`, `ROBOFLOW_API_KEY`, ...), optional `.env` loading,
+  per-source `auth.token_env` override, `auth.required` fail-fast.
+- [x] **Machine-readable license schema** (`license: {name, verified, url}`)
+  + `EngineConfig.validate_sources_ready()` — an enabled source with a
+  missing repo/project reference or `verified: false` aborts the whole run
+  before any download happens, with a clear per-source error message.
+- [x] **Second downloader kind (`roboflow`)** — proves the registry really
+  is source-agnostic, not just "huggingface with extra steps." Used for the
+  `fire_smoke` source (`fire-rqbio/fire-and-smoke-yikzn`, version 3 pinned).
+- [x] **Per-source `class_map`** — lets a source use its own label spelling
+  (e.g. `weapons`' `GUN`/`KNIFE`/`PERSON`) and have it translated to g3e's
+  class names, instead of forcing every upstream dataset to already match.
+- [x] **HF uploader as a library function**, not just a script
+  (`exporters/hf_uploader.py` → `upload_release_to_hf()`), wired into
+  `Pipeline.run(upload_to_hf=...)` and `POST /pipeline/run`, always opt-in.
+- [x] **Real sourcing decisions for weapons/fire_smoke** — see README
+  "Dataset sources." Both currently ship `license.verified: false` pending
+  an actual human review of their terms; that's the intended state, not a
+  bug — flip it once reviewed.
+
 ## Near-term (v1.1)
 
+- [ ] **License review** — actually check the terms of
+  `Subh775/WeaponDetection_Grouped` and the pinned `fire-rqbio/fire-and-smoke-yikzn`
+  v3 project, then flip `license.verified: true` for whichever pass review.
+  This is the one blocker standing between v1's config and a real run.
 - [ ] **`scripts/generate_classes_json.py`** — right now `metadata/classes.json`
   is hand-derived from `configs/classes.yaml`; write the one-line script that
   regenerates it, and call it from `scripts/run_pipeline.py` automatically.
-- [ ] **Real `hf_repo` values** for the `weapons` and `fire_smoke` sources in
-  `configs/datasets.yaml` — currently placeholders. Needs a human to pick and
-  license-check actual HF datasets (or another source kind) for `gun`,
-  `knife`, `fire`, `smoke`.
 - [ ] **Convert stage wiring in `Pipeline.run()`** — `converters/coco_to_yolo.py`
   exists and is tested, but `Pipeline._download_stage()` doesn't yet call it
   on `DownloadedImage.raw_annotations`; currently `Pipeline.run()` produces
-  metadata + splits but not the `labels/*.txt` files. Wire this in once a real
-  source's `raw_annotations` schema is confirmed (schemas vary per HF dataset).
+  metadata + splits but not the `labels/*.txt` files. Wire this in once the
+  weapons/fire_smoke sources are verified and their `raw_annotations` shape
+  (COCO boxes vs. already-YOLO label files, per source) is confirmed end-to-end.
 - [ ] **Progress reporting** — `POST /pipeline/run` currently blocks until the
   whole run finishes. For a 6,000-image run this is minutes, not seconds;
   add either a background-task + polling endpoint, or server-sent events.
 
 ## Medium-term (v1.2+)
 
-- [ ] **New downloader kinds**: raw HTTP/zip source, Roboflow, local-folder
-  import (for hand-collected CCTV footage from `g3e-app`). See
-  `docs/ARCHITECTURE.md` → "Adding a brand-new kind of source".
+- [ ] **New downloader kinds**: Kaggle, GitHub releases, plain HTTP/zip,
+  local-folder import (for hand-collected CCTV footage from `g3e-app`). See
+  `docs/ARCHITECTURE.md` → "Adding a brand-new kind of source" — the
+  huggingface/roboflow pair already proves the pattern holds up.
 - [ ] **Raise `global_max_images`** once training on v1's ~6k images shows
   which classes need more data — do this deliberately, class-by-class via
   `configs/priority.yaml` overrides first, before raising the global ceiling.
@@ -37,6 +62,10 @@ intentionally deferred.
   weights, use a first-round trained model's confusion matrix to re-weight
   `configs/priority.yaml` for round 2 (boost the classes the model gets
   wrong most).
+- [ ] **Credential rotation / multiple accounts** — `auth.token_env` already
+  supports pointing a source at a non-default variable; a future update
+  could add token *rotation* (fall back to a second variable if the first
+  hits a rate limit) if that becomes a real bottleneck.
 
 ## Long-term / exploratory
 

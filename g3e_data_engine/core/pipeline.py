@@ -38,6 +38,7 @@ class PipelineRunResult:
     stats: dict = field(default_factory=dict)
     dry_run: bool = True
     notes: str = ""
+    upload_url: str | None = None
 
 
 class Pipeline:
@@ -74,6 +75,8 @@ class Pipeline:
         priority_overrides: dict[str, float] | None = None,
         available_by_class: dict[str, int] | None = None,
         export: bool = False,
+        upload_to_hf: str | None = None,
+        hf_private: bool = True,
         work_dir: str | Path = "datasets",
     ) -> PipelineRunResult:
         allocation = self.allocator.allocate(
@@ -91,6 +94,13 @@ class Pipeline:
                     "download plan the engine would execute."
                 ),
             )
+
+        # Refuse to download anything if any enabled source is missing its
+        # repo/project reference or has an unverified license. This check is
+        # deliberately NOT part of load_engine_config() (which also backs
+        # dry_run and /pipeline/allocate) — those should keep working even
+        # while a source is still mid-setup. See config.py -> validate_sources_ready.
+        self.config.validate_sources_ready()
 
         work_dir = Path(work_dir)
         raw_dir = work_dir / "raw"
@@ -173,12 +183,24 @@ class Pipeline:
             )
             from g3e_data_engine.exporters.release_exporter import export_release
 
-            export_release(
+            release_zip = export_release(
                 processed_dir=processed_dir,
                 metadata_dir=metadata_dir,
                 releases_dir=work_dir / "releases",
                 version=entry["version"].lstrip("1."),
             )
+
+            if upload_to_hf:
+                # Uploading is opt-in per call (upload_to_hf must be passed
+                # explicitly) — export never publishes anything on its own.
+                from g3e_data_engine.exporters.hf_uploader import upload_release_to_hf
+
+                release_folder = release_zip.parent / release_zip.stem
+                result.upload_url = upload_release_to_hf(
+                    folder=release_folder,
+                    repo_id=upload_to_hf,
+                    private=hf_private,
+                )
 
         return result
 

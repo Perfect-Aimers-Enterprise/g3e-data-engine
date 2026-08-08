@@ -19,6 +19,7 @@ import json
 import sys
 
 from g3e_data_engine import Pipeline, load_engine_config
+from g3e_data_engine.core.exceptions import SourceConfigError, MissingCredentialError
 
 
 def _parse_overrides(pairs: list[str]) -> dict[str, float]:
@@ -40,16 +41,35 @@ def main() -> int:
         "--override", action="append", default=[], help="class=weight, repeatable"
     )
     parser.add_argument("--export", action="store_true", default=False)
+    parser.add_argument(
+        "--upload-to-hf", default=None,
+        help="HF dataset repo id, e.g. your-org/g3e-vision-dataset. Requires --export. "
+        "Never runs unless you pass this explicitly — see README 'Credentials'.",
+    )
+    parser.add_argument("--public", action="store_true", help="Upload as public (default: private)")
     args = parser.parse_args()
+
+    if args.upload_to_hf and not args.export:
+        parser.error("--upload-to-hf requires --export")
 
     cfg = load_engine_config()
     pipeline = Pipeline(cfg)
-    result = pipeline.run(
-        dry_run=args.dry_run,
-        total_images=args.total_images,
-        priority_overrides=_parse_overrides(args.override),
-        export=args.export,
-    )
+
+    try:
+        result = pipeline.run(
+            dry_run=args.dry_run,
+            total_images=args.total_images,
+            priority_overrides=_parse_overrides(args.override),
+            export=args.export,
+            upload_to_hf=args.upload_to_hf,
+            hf_private=not args.public,
+        )
+    except SourceConfigError as exc:
+        print(exc)
+        return 1
+    except MissingCredentialError as exc:
+        print(f"Missing credential: {exc}")
+        return 1
 
     print(json.dumps(result.allocation.as_dict(), indent=2))
     if result.dry_run:
@@ -58,6 +78,8 @@ def main() -> int:
         print(f"\naccepted images: {len(result.metadata_records)}")
         print(f"duplicates removed: {result.duplicates_removed}")
         print(f"split: {result.split and {k: len(v) for k, v in result.split.items()}}")
+        if result.upload_url:
+            print(f"uploaded to: {result.upload_url}")
 
     return 0
 

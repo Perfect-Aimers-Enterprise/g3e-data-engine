@@ -31,24 +31,48 @@ entry points.
 
 ## Files to touch vs. NOT touch
 
-### Adding a new download source (e.g. a new HF dataset for `knife`)
+### Adding a new download source on an EXISTING kind (e.g. another HF dataset)
 **Touch:**
-- `configs/datasets.yaml` — add the source block, set `hf_repo`, `classes`, `max_images`, `license`.
+- `configs/datasets.yaml` — add the source block: `hf_repo`, `classes`,
+  `class_map` (if the source's raw labels don't already match g3e's class
+  names — e.g. `"GUN": gun`), `max_images`, `license: {name, verified, url}`,
+  and `auth` if it needs a non-default token env var.
 
 **Don't touch:**
-- `g3e_data_engine/downloader/*.py` — `HFDownloader` already handles any
-  `kind: huggingface` source generically.
+- `g3e_data_engine/downloader/*.py` — `HFDownloader`/`RoboflowDownloader`
+  already handle any source of their kind generically.
 - `core/pipeline.py` — the download stage already fans out to every enabled source.
+- `core/config.py` — `validate_sources_ready()` already checks any new
+  source the same way it checks existing ones.
 
-### Adding a brand-new *kind* of source (e.g. plain HTTP zip, Roboflow, S3)
+Remember: a new source ships with `license.verified: false` until a human
+actually reviews its terms — see DATASET_SPEC.md §11. The engine will refuse
+to download from it until that's flipped to `true`, which is intentional,
+not a bug to work around.
+
+### Adding a brand-new *kind* of source (e.g. Kaggle, GitHub releases, a direct URL/zip)
 **Touch:**
-- New file `g3e_data_engine/downloader/<kind>_downloader.py` implementing `Downloader`, decorated `@register("<kind>")`.
+- New file `g3e_data_engine/downloader/<kind>_downloader.py` implementing
+  `Downloader`, decorated `@register("<kind>")`. Follow
+  `roboflow_downloader.py` as the template for a non-HF source (it shows the
+  pattern for: lazy-importing the third-party client, pulling a token via
+  `credentials.py`, respecting per-class quotas, and applying `class_map`).
 - One import line added to `g3e_data_engine/downloader/__init__.py`.
-- `configs/datasets.yaml` — set `kind: <kind>` on the relevant source(s).
+- If the new kind needs its own credential type, add its default env var
+  name to `DEFAULT_ENV_VARS` in `g3e_data_engine/core/credentials.py`
+  (e.g. `"kaggle": "KAGGLE_KEY"`) — one line.
+- `configs/datasets.yaml` — set `kind: <kind>` on the relevant source(s),
+  plus whatever fields that kind needs (mirror `project`/`version` on
+  `SourceDef` in `core/config.py` if your kind needs its own reference
+  fields beyond `hf_repo`).
 
 **Don't touch:**
 - `g3e_data_engine/downloader/base.py` — the interface is intentionally source-agnostic.
 - `core/pipeline.py`.
+- `core/config.py -> validate_sources_ready()` — unless your new kind has a
+  genuinely different "is this source ready" condition than "has a
+  repo/project reference and a verified license" (rare — most new kinds fit
+  that same shape).
 
 ### Adding a new class (e.g. `helmet`)
 **Touch:**
@@ -72,6 +96,26 @@ the call site (CLI flag, API request body, or Python kwarg).
 the *default* for every future run.
 **Don't touch:** `core/priority.py` — unless you're changing the allocation
 *algorithm* itself (e.g. moving from proportional-by-tier to something else).
+
+### Adding a new credential type or changing how a token is looked up
+**Touch:** `g3e_data_engine/core/credentials.py` only — it's the single
+place every downloader and the HF uploader call into (`get_token` /
+`require_token`). Adding a new kind's default env var name is one line in
+`DEFAULT_ENV_VARS`.
+
+**Don't touch:** any downloader module — they already call `get_token`/
+`require_token` rather than reading `os.environ` directly, so a change here
+propagates everywhere automatically.
+
+### Publishing a release to Hugging Face
+**Touch:** nothing, if it's one-off — pass `upload_to_hf=<repo_id>` to
+`Pipeline.run()` / `--upload-to-hf` on the CLI / `upload_to_hf` in the API
+request body, or run `scripts/upload_hf.py` directly against an already-exported
+release folder.
+**Don't touch:** `g3e_data_engine/exporters/hf_uploader.py` unless you're
+changing *how* uploads work (e.g. adding a dry-run/preview mode, or
+supporting a second hub). It's intentionally the only file in this repo that
+talks to a remote destination outside your own infra.
 
 ### Changing the pipeline's stage order or adding a wholly new stage
 **Touch:** `core/pipeline.py` (and the new stage's own module).

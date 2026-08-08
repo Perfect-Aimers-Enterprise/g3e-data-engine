@@ -66,6 +66,8 @@ def run_pipeline(req: RunPipelineRequest) -> RunPipelineResponse:
         priority_overrides=req.priority_overrides or None,
         available_by_class=req.available_by_class or None,
         export=req.export,
+        upload_to_hf=req.upload_to_hf,
+        hf_private=req.hf_private,
     )
 
     return RunPipelineResponse(
@@ -76,4 +78,5 @@ def run_pipeline(req: RunPipelineRequest) -> RunPipelineResponse:
         duplicates_removed=(result.duplicates_removed if not result.dry_run else None),
         split_counts=({k: len(v) for k, v in result.split.items()} if result.split else None),
         stats=(result.stats or None),
+        upload_url=result.upload_url,
     )

@@ -14,6 +14,8 @@ from typing import Optional
 import yaml
 from pydantic import BaseModel, Field, field_validator
 
+from g3e_data_engine.core.exceptions import SourceConfigError
+
 # Repo root: g3e_data_engine/core/config.py -> core -> g3e_data_engine -> repo root
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CONFIGS_DIR = REPO_ROOT / "configs"
@@ -46,13 +48,42 @@ class ClassesConfig(BaseModel):
 # ---------------------------------------------------------------------------
 # datasets.yaml
 # ---------------------------------------------------------------------------
+class LicenseInfo(BaseModel):
+    """
+    Machine-readable license status for a source.
+
+    `verified` is deliberately NOT inferred from anything (not from the
+    source's own claims, not from a similar dataset's license) — a human
+    reviews the actual terms and flips this to True. Until then, an enabled
+    source with `verified: False` is refused before any download happens.
+    See DATASET_SPEC.md section 11.
+    """
+    name: str = "UNKNOWN"
+    verified: bool = False
+    url: str = ""
+
+
+class AuthConfig(BaseModel):
+    """
+    Credential lookup config for a source. The actual token/API key is NEVER
+    stored here or in any yaml file — only *where to find it* is. See
+    g3e_data_engine/core/credentials.py.
+    """
+    token_env: str | None = None  # overrides the kind's default env var name
+    required: bool = False        # if True, downloading fails fast without a token
+
+
 class SourceDef(BaseModel):
     enabled: bool = True
-    kind: str = "huggingface"
-    hf_repo: str = ""
+    kind: str = "huggingface"          # registry key — see downloader/base.py
+    hf_repo: str = ""                  # used by kind="huggingface"
+    project: str = ""                  # used by kind="roboflow", e.g. "workspace/project-slug"
+    version: int | None = None         # used by kind="roboflow" — pin it, don't float
     classes: list[str] = Field(default_factory=list)
+    class_map: dict[str, str] = Field(default_factory=dict)  # raw source label -> g3e class name
     max_images: int = 1000
-    license: str = "unknown"
+    license: LicenseInfo = Field(default_factory=LicenseInfo)
+    auth: AuthConfig = Field(default_factory=AuthConfig)
 
 
 class DatasetsConfig(BaseModel):
@@ -149,6 +180,46 @@ class EngineConfig(BaseModel):
                 f"datasets.yaml global_max_images ({self.datasets.global_max_images}). "
                 "Raise global_max_images deliberately if you really want a bigger run."
             )
+
+    def validate_sources_ready(self, source_names: list[str] | None = None) -> None:
+        """
+        The "don't download anything until we're sure it's safe to" gate.
+
+        Unlike `validate_cross_refs` (checked on every config load, including
+        dry runs and `/pipeline/allocate`), this is only called right before
+        the download stage actually executes — so planning/allocation always
+        stays available even while a source is still mid-setup.
+
+        Raises SourceConfigError listing every problem across every source
+        at once, so a run never dies partway through, having already
+        downloaded from source A only to fail on source B.
+        """
+        sources = self.datasets.enabled_sources()
+        if source_names is not None:
+            sources = {k: v for k, v in sources.items() if k in source_names}
+
+        problems: list[tuple[str, str]] = []
+        for name, src in sources.items():
+            if src.kind == "huggingface" and not src.hf_repo:
+                problems.append((name, "Source enabled but hf_repo is missing."))
+            elif src.kind == "roboflow" and (not src.project or src.version is None):
+                problems.append((name, "Source enabled but project/version is missing (pin both — don't float a version)."))
+
+            if not src.license.verified:
+                problems.append((
+                    name,
+                    f"Dataset license has not been verified (name={src.license.name!r}). "
+                    "Set license.verified: true in configs/datasets.yaml after reviewing the actual terms.",
+                ))
+
+        if problems:
+            lines = ["G3E DATA ENGINE", ""]
+            for name, msg in problems:
+                lines.append(f"\u2717 {name}")
+                lines.append(f"  {msg}")
+                lines.append("")
+            lines.append("Processing aborted. No data was downloaded.")
+            raise SourceConfigError("\n".join(lines))
 
 
 def _read_yaml(path: Path) -> dict:

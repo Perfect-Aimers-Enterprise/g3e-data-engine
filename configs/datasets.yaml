@@ -1,35 +1,85 @@
 # g3e-data-engine — Dataset Sources
 #
-# Each source declares which classes it can supply and a HARD per-source cap
-# (max_images) so v1 never balloons into a multi-hundred-GB download by
-# accident. Raise these caps deliberately, not by default.
+# `kind` is a downloader-registry key (see g3e_data_engine/downloader/) —
+# NOT tied to Hugging Face specifically. The engine is source-agnostic:
+# huggingface and roboflow both work today; kaggle/github/url/local are
+# on the roadmap (docs/FUTURE_UPDATES.md) and just need one new downloader
+# module + one registry import each — nothing else in the pipeline changes.
+#
+# SAFETY RULES (enforced by EngineConfig.validate_sources_ready, checked
+# right before any download begins — never mid-run):
+#   1. An enabled huggingface source MUST have `hf_repo` set.
+#   2. An enabled roboflow source MUST have `project` + `version` pinned.
+#   3. Every enabled source MUST have `license.verified: true`.
+# A source failing any of these aborts the WHOLE run before anything is
+# downloaded — "G3E DATA ENGINE ✗ <source> ... Processing aborted."
+#
+# Credentials (HF_TOKEN, ROBOFLOW_API_KEY, ...) are never put here — see
+# the `auth` block per source and README.md "Credentials".
+
 sources:
+
   coco:
     enabled: true
-    kind: huggingface        # downloader/registry key
+    kind: huggingface
     hf_repo: "detection-datasets/coco"
     classes: [person, car, dog, cat]
-    max_images: 4000
-    license: "CC BY 4.0"
+    max_images: 4000          # repo is ~20GB total — this cap is load-bearing, don't drop it
+    license:
+      name: "CC BY 4.0"
+      verified: true
+      url: "https://huggingface.co/datasets/detection-datasets/coco"
+    auth:
+      token_env: "HF_TOKEN"   # optional for this public dataset; improves rate limits when set
+      required: false
 
+  # Consolidated GUN / KNIFE / PERSON weapon-detection set (Roboflow-derived,
+  # re-hosted on HF), ~7,615 rows. `person` here gets merged with `person`
+  # from coco by the G3E class mapper (they're both just "person" downstream).
+  #
+  # license.verified is intentionally FALSE until a human confirms the
+  # actual redistribution terms of this derivative dataset — don't assume it
+  # inherited its source Roboflow project's license. Flip it to true only
+  # after that review; until then the engine refuses to download from it.
   weapons:
     enabled: true
     kind: huggingface
-    hf_repo: ""               # fill in with the actual dataset repo you choose
-    classes: [gun, knife]
+    hf_repo: "Subh775/WeaponDetection_Grouped"
+    classes: [gun, knife, person]
+    class_map:
+      GUN: gun
+      KNIFE: knife
+      PERSON: person
     max_images: 2000
-    license: "TBD — verify before enabling"
+    license:
+      name: "UNKNOWN — derivative of a Roboflow dataset, terms not yet reviewed"
+      verified: false
+      url: "https://huggingface.co/datasets/Subh775/WeaponDetection_Grouped"
+    auth:
+      token_env: "HF_TOKEN"
+      required: false
 
+  # Roboflow Universe project with separate fire/smoke classes, listed as
+  # CC BY 4.0, 3,884 images. Version is PINNED (not "latest") so a future
+  # update to the upstream project can't silently change an already-released
+  # g3e-vision-dataset version. Re-verify the license on the pinned page
+  # before flipping `verified: true` — Roboflow project licenses can change.
   fire_smoke:
     enabled: true
-    kind: huggingface
-    hf_repo: ""               # fill in with the actual dataset repo you choose
+    kind: roboflow
+    project: "fire-rqbio/fire-and-smoke-yikzn"
+    version: 3
     classes: [fire, smoke]
     max_images: 2000
-    license: "TBD — verify before enabling"
+    license:
+      name: "CC BY 4.0 (per project listing — verify on the pinned version page before enabling)"
+      verified: false
+      url: "https://universe.roboflow.com/fire-rqbio/fire-and-smoke-yikzn"
+    auth:
+      token_env: "ROBOFLOW_API_KEY"
+      required: true          # Roboflow's API has no anonymous read path
 
-# Global safety valve. The pipeline will refuse to schedule more than this
+# Absolute safety valve. The pipeline refuses to schedule more than this
 # many total images across ALL sources in a single run, regardless of what
-# the per-source caps above add up to. This is the number to raise when you
-# outgrow v1 — do it consciously, on a machine with the disk/bandwidth for it.
+# the per-source caps above add up to.
 global_max_images: 8000

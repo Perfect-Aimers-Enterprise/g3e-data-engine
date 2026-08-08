@@ -132,8 +132,50 @@ counted in `metadata/stats.json`'s rejection breakdown.
 
 ## 11. Licensing requirements for imported sources
 
-Every entry in `configs/datasets.yaml -> sources.<name>` must set `license`
-to the source's actual license before `enabled: true` ships in a real
-release — `"TBD — verify before enabling"` is a placeholder, not a license,
-and is a signal that source still needs a human to check its terms
-(redistribution rights in particular) before it's used in anything public.
+`license` is a machine-readable object, not a free-text string:
+
+```yaml
+license:
+  name: "CC BY 4.0"
+  verified: true
+  url: "https://huggingface.co/datasets/detection-datasets/coco"
+```
+
+**`verified: false` is the default and is never inferred automatically** —
+not from the source's own claims, not from a similar/related dataset's
+license, not from where it's hosted. A human reviews the actual terms and
+flips it to `true`. Until then, `EngineConfig.validate_sources_ready()`
+refuses to download from that source at all — see README.md "Source
+readiness" for the exact failure mode. This is why v1 ships with `weapons`
+and `fire_smoke` present in `configs/datasets.yaml` but not yet usable: their
+`hf_repo`/`project` are filled in and correct, but nobody has independently
+confirmed their redistribution terms yet.
+
+Never copy a license string from one dataset onto a different one, even a
+closely related one (e.g. a Roboflow-derived HF re-upload does not
+automatically carry the same terms as the original Roboflow project).
+
+## 12. Credentials
+
+No token, API key, or other secret is ever stored in `configs/*.yaml`,
+`metadata/*.json`, or anywhere else in this repo. Only *which environment
+variable to read* is configurable (`SourceDef.auth.token_env`); the value
+itself always comes from the process environment (optionally via a
+gitignored local `.env` file). See `g3e_data_engine/core/credentials.py` and
+README.md "Credentials."
+
+A source's `auth.required: true` means the engine raises
+`MissingCredentialError` immediately if that token is unset, rather than
+letting an anonymous request fail confusingly partway through (this is the
+default for `kind: roboflow`, which has no anonymous read path at all).
+
+## 13. Publishing releases
+
+`g3e_data_engine/exporters/hf_uploader.py` (and `scripts/upload_hf.py`) push
+a release folder to the Hugging Face Hub. Uploading is **never** automatic —
+`Pipeline.run(export=True)` alone only produces a local zip under
+`datasets/releases/`; publishing anywhere requires the caller to pass
+`upload_to_hf=<repo_id>` explicitly (Python), `--upload-to-hf <repo_id>`
+(CLI), or set `upload_to_hf` in the `/pipeline/run` request body (API).
+Uploading always requires a Hugging Face token with write access — there is
+no anonymous path, unlike downloading a public dataset.

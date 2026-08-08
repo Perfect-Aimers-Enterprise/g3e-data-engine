@@ -9,6 +9,10 @@ datasets>=2.18
 huggingface_hub>=0.22
 requests>=2.31
 tqdm>=4.66
+python-dotenv>=1.0
+
+# optional — only needed if you enable a `kind: roboflow` source
+# roboflow>=1.1
 
 # dev / test only
 pytest>=8.0

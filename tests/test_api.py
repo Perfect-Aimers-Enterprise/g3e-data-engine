@@ -49,3 +49,13 @@ def test_run_pipeline_dry_run_never_downloads():
     data = resp.json()
     assert data["dry_run"] is True
     assert data["accepted_images"] is None
+
+
+def test_run_pipeline_real_run_refuses_cleanly_when_sources_not_ready():
+    """weapons/fire_smoke ship with license.verified=False — must be a clean
+    422, not a 500 traceback, and must happen before any download."""
+    resp = client.post("/pipeline/run", json={"dry_run": False, "total_images": 500})
+    assert resp.status_code == 422
+    data = resp.json()
+    assert data["error"] == "source_not_ready"
+    assert "weapons" in data["detail"]
