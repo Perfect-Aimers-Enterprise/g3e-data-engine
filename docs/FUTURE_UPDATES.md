@@ -7,26 +7,47 @@ intentionally deferred.
 
 ## Done since initial v1 draft
 
-- [x] **Credentials system** (`core/credentials.py`) — env-var based token
+- [x] **Preflight checks** (`core/preflight.py`) — dependency (is the
+  package a source's `kind` needs actually importable?), repository
+  (repo/project reference set?), and license (verified?) — checked in
+  milliseconds, with no network calls, before `Pipeline.run(dry_run=False)`
+  downloads anything. This is what catches a missing `roboflow` install
+  immediately instead of after other sources have already spent
+  minutes/hours downloading. Exposed standalone via `scripts/check_sources.py`.
+- [x] **Download progress + incremental, resumable saves**
+  (`downloader/progress.py`) — every downloader writes each accepted image
+  to disk and records it in a per-source `_progress.json` manifest
+  immediately (not batched), shows a live `tqdm` progress bar, and resumes
+  from that manifest on a re-run instead of starting over (skipping
+  satisfied classes, and for HF streaming sources, skipping already-scanned
+  rows via `.skip()`).
+- [x] **Per-source failure isolation** — `Pipeline._download_stage()` wraps
+  each source's `downloader.download(...)` call individually; one source
+  failing (network error, etc.) is recorded in `result.failed_sources` and
+  the run continues with the remaining sources rather than aborting
+  everything and losing already-downloaded data.
+- [x] **Pipeline stage banners** — `Download`, `Validate`, `Deduplicate`,
+  `Metadata & Split`, `Statistics`, `Export`, `Upload to Hugging Face` each
+  print a start line + a short result line, so a long-running console or
+  Colab session always shows exactly where the run is.
+- [x] **Allocator transparency** — `AllocationResult.notes` explains it
+  explicitly whenever `min_per_class`/`max_per_class` clamping makes the
+  actual total allocated diverge noticeably from what was requested,
+  instead of leaving that as a silent surprise in the raw numbers.
+- [x] Credentials system (`core/credentials.py`) — env-var based token
   lookup (`HF_TOKEN`, `ROBOFLOW_API_KEY`, ...), optional `.env` loading,
   per-source `auth.token_env` override, `auth.required` fail-fast.
-- [x] **Machine-readable license schema** (`license: {name, verified, url}`)
-  + `EngineConfig.validate_sources_ready()` — an enabled source with a
-  missing repo/project reference or `verified: false` aborts the whole run
-  before any download happens, with a clear per-source error message.
-- [x] **Second downloader kind (`roboflow`)** — proves the registry really
-  is source-agnostic, not just "huggingface with extra steps." Used for the
-  `fire_smoke` source (`fire-rqbio/fire-and-smoke-yikzn`, version 3 pinned).
-- [x] **Per-source `class_map`** — lets a source use its own label spelling
-  (e.g. `weapons`' `GUN`/`KNIFE`/`PERSON`) and have it translated to g3e's
-  class names, instead of forcing every upstream dataset to already match.
-- [x] **HF uploader as a library function**, not just a script
-  (`exporters/hf_uploader.py` → `upload_release_to_hf()`), wired into
-  `Pipeline.run(upload_to_hf=...)` and `POST /pipeline/run`, always opt-in.
-- [x] **Real sourcing decisions for weapons/fire_smoke** — see README
-  "Dataset sources." Both currently ship `license.verified: false` pending
-  an actual human review of their terms; that's the intended state, not a
-  bug — flip it once reviewed.
+- [x] Machine-readable license schema (`license: {name, verified, url}`)
+  + `EngineConfig.validate_sources_ready()` (now delegating to preflight).
+- [x] Second downloader kind (`roboflow`), proving the registry is
+  source-agnostic. Used for `fire_smoke`.
+- [x] Per-source `class_map` for translating a source's native label
+  spelling to g3e's class names.
+- [x] HF uploader as a library function (`exporters/hf_uploader.py`),
+  wired into `Pipeline.run(upload_to_hf=...)`, always opt-in.
+- [x] Real sourcing decisions for weapons/fire_smoke (see README "Dataset
+  sources") — both intentionally ship `license.verified: false` pending an
+  actual human review of their terms.
 
 ## Near-term (v1.1)
 
@@ -43,9 +64,17 @@ intentionally deferred.
   metadata + splits but not the `labels/*.txt` files. Wire this in once the
   weapons/fire_smoke sources are verified and their `raw_annotations` shape
   (COCO boxes vs. already-YOLO label files, per source) is confirmed end-to-end.
-- [ ] **Progress reporting** — `POST /pipeline/run` currently blocks until the
-  whole run finishes. For a 6,000-image run this is minutes, not seconds;
-  add either a background-task + polling endpoint, or server-sent events.
+- [ ] **Progress reporting over the API** — `POST /pipeline/run` still blocks
+  until the whole run finishes (the console/CLI path now has live stage +
+  per-source progress; the HTTP path doesn't yet). Add either a
+  background-task + polling endpoint, or server-sent events, that streams
+  the same per-stage/per-source lines the console gets.
+- [ ] **`_progress.json` write cost at scale** — `save_progress()` currently
+  rewrites the *entire* per-source manifest (including the full `images`
+  list) after every single image, which is O(n²) total I/O across a
+  source's run. Fine at v1's few-thousand-images-per-source scale; revisit
+  (e.g. append-only log + periodic compaction) before pushing per-source
+  budgets much higher.
 
 ## Medium-term (v1.2+)
 

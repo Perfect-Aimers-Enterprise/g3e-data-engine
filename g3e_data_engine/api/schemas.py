@@ -28,6 +28,7 @@ class ClassBudgetOut(BaseModel):
 class AllocateResponse(BaseModel):
     total_requested: int
     total_allocated: int
+    notes: str = ""
     budgets: list[ClassBudgetOut]
 
 
@@ -57,3 +58,4 @@ class RunPipelineResponse(BaseModel):
     split_counts: dict[str, int] | None = None
     stats: dict | None = None
     upload_url: str | None = None
+    failed_sources: dict[str, str] = Field(default_factory=dict)

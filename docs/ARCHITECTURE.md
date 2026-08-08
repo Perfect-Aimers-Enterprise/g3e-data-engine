@@ -61,6 +61,11 @@ not a bug to work around.
 - If the new kind needs its own credential type, add its default env var
   name to `DEFAULT_ENV_VARS` in `g3e_data_engine/core/credentials.py`
   (e.g. `"kaggle": "KAGGLE_KEY"`) — one line.
+- If the new kind needs a third-party package that isn't a core dependency
+  (like `roboflow`), add it to `KIND_DEPENDENCIES` in
+  `g3e_data_engine/core/preflight.py` (import name + install hint) — one
+  line — so preflight catches a missing install in milliseconds instead of
+  the pipeline reaching that downloader mid-run and crashing on `import`.
 - `configs/datasets.yaml` — set `kind: <kind>` on the relevant source(s),
   plus whatever fields that kind needs (mirror `project`/`version` on
   `SourceDef` in `core/config.py` if your kind needs its own reference
@@ -106,6 +111,31 @@ place every downloader and the HF uploader call into (`get_token` /
 **Don't touch:** any downloader module — they already call `get_token`/
 `require_token` rather than reading `os.environ` directly, so a change here
 propagates everywhere automatically.
+
+### Changing what preflight checks, or adding a check for a new failure mode
+**Touch:** `g3e_data_engine/core/preflight.py` — `run_preflight()` is the
+single place all three checks (dependency, repository, license) live, and
+`PreflightReport.render()` is the single place the ASCII report format
+lives. `EngineConfig.validate_sources_ready()` (config.py) is a thin
+one-line delegate to this module — don't duplicate logic there.
+
+**Don't touch:** individual downloader modules to add a new *kind* of
+check — preflight is deliberately kind-agnostic; a new check should apply
+uniformly across every source, the same way dependency/repository/license
+already do.
+
+### Changing download progress/resume behavior
+**Touch:** `g3e_data_engine/downloader/progress.py` — `load_progress()` /
+`save_progress()` are the single shared implementation every downloader
+calls into, so the on-disk manifest shape stays identical across kinds.
+Downloaders call `save_progress()` after every accepted image (not
+batched) — that's what bounds data loss on a crash to "at most one image,"
+so don't change that call site to be less frequent without a good reason.
+
+**Don't touch:** `core/pipeline.py`'s per-source try/except in
+`_download_stage()` unless you're changing how a source-level failure (as
+opposed to a single-image failure inside a downloader, which downloaders
+already handle themselves) is reported or isolated.
 
 ### Publishing a release to Hugging Face
 **Touch:** nothing, if it's one-off — pass `upload_to_hf=<repo_id>` to

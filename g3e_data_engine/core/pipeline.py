@@ -39,6 +39,7 @@ class PipelineRunResult:
     dry_run: bool = True
     notes: str = ""
     upload_url: str | None = None
+    failed_sources: dict[str, str] = field(default_factory=dict)
 
 
 class Pipeline:
@@ -84,6 +85,8 @@ class Pipeline:
             overrides=priority_overrides,
             available_by_class=available_by_class,
         )
+        if allocation.notes:
+            print(f"[priority] {allocation.notes}")
 
         if dry_run:
             return PipelineRunResult(
@@ -95,8 +98,12 @@ class Pipeline:
                 ),
             )
 
-        # Refuse to download anything if any enabled source is missing its
-        # repo/project reference or has an unverified license. This check is
+        # Preflight: refuse to download anything if any enabled source is
+        # missing its downloader dependency (e.g. `roboflow` not installed),
+        # missing its repo/project reference, or has an unverified license.
+        # Runs in milliseconds, no network calls — this is what stops a run
+        # from burning minutes/hours on other sources before discovering a
+        # missing package on the LAST source it reaches. This check is
         # deliberately NOT part of load_engine_config() (which also backs
         # dry_run and /pipeline/allocate) — those should keep working even
         # while a source is still mid-setup. See config.py -> validate_sources_ready.
@@ -108,16 +115,21 @@ class Pipeline:
         raw_dir.mkdir(parents=True, exist_ok=True)
         processed_dir.mkdir(parents=True, exist_ok=True)
 
-        downloaded_paths, class_by_path, source_by_path = self._download_stage(
+        downloaded_paths, class_by_path, source_by_path, failed_sources = self._download_stage(
             allocation, raw_dir
         )
 
+        print(f"\n=== STAGE: Validate ({len(downloaded_paths)} downloaded image(s)) ===")
         validations = validate_batch(downloaded_paths, self.config.processing.image)
         accepted_paths = [v.path for v in validations if v.accepted]
+        print(f"    accepted: {len(accepted_paths)} / {len(validations)}")
 
+        print("\n=== STAGE: Deduplicate ===")
         dedup_result = find_duplicates(accepted_paths, self.config.processing.duplicates)
         final_paths = dedup_result.kept
+        print(f"    removed {len(dedup_result.duplicates)} duplicate(s); {len(final_paths)} unique image(s) remain")
 
+        print("\n=== STAGE: Metadata & Split ===")
         metadata_records = [
             ImageMetadata(
                 id=Path(p).stem,
@@ -136,7 +148,12 @@ class Pipeline:
         id_to_split.update({i: "test" for i in split_result.test})
         for m in metadata_records:
             m.split = id_to_split.get(m.id, "unassigned")
+        print(
+            f"    split -> train={len(split_result.train)} "
+            f"val={len(split_result.val)} test={len(split_result.test)}"
+        )
 
+        print("\n=== STAGE: Statistics ===")
         rejection = RejectionCounts(
             total_seen=len(validations),
             accepted=len(final_paths),
@@ -164,6 +181,14 @@ class Pipeline:
 
         with open(metadata_dir / "stats.json", "w", encoding="utf-8") as f:
             json.dump(stats.to_dict(), f, indent=2)
+        print(f"    {len(metadata_records)} image(s) accepted into the dataset")
+
+        if failed_sources:
+            print(
+                f"\n[warning] {len(failed_sources)} source(s) failed and were skipped "
+                f"(their partial progress is preserved on disk — re-run to resume them): "
+                f"{list(failed_sources)}"
+            )
 
         result = PipelineRunResult(
             allocation=allocation,
@@ -173,9 +198,11 @@ class Pipeline:
             split=split_result.as_dict(),
             stats=stats.to_dict(),
             dry_run=False,
+            failed_sources=failed_sources,
         )
 
         if export:
+            print("\n=== STAGE: Export ===")
             entry = bump_version(
                 metadata_dir / "versions.json",
                 notes=f"Pipeline run: {len(metadata_records)} images",
@@ -189,10 +216,12 @@ class Pipeline:
                 releases_dir=work_dir / "releases",
                 version=entry["version"].lstrip("1."),
             )
+            print(f"    wrote {release_zip}")
 
             if upload_to_hf:
                 # Uploading is opt-in per call (upload_to_hf must be passed
                 # explicitly) — export never publishes anything on its own.
+                print(f"\n=== STAGE: Upload to Hugging Face ({upload_to_hf}) ===")
                 from g3e_data_engine.exporters.hf_uploader import upload_release_to_hf
 
                 release_folder = release_zip.parent / release_zip.stem
@@ -201,6 +230,7 @@ class Pipeline:
                     repo_id=upload_to_hf,
                     private=hf_private,
                 )
+                print(f"    uploaded -> {result.upload_url}")
 
         return result
 
@@ -208,7 +238,16 @@ class Pipeline:
         """
         Fans the per-class allocation out across every enabled source that
         can supply that class, respecting each source's own max_images cap.
-        Returns (all_paths, path->classes, path->source_name).
+
+        Each source's `downloader.download(...)` call is wrapped in its own
+        try/except: if one source fails (network error, an issue the
+        downloader itself didn't swallow, etc.), that failure is recorded
+        and the loop moves on to the remaining sources instead of aborting
+        the whole run — whatever that source already saved to disk (via its
+        own incremental progress manifest, see downloader/progress.py) is
+        kept, and the source can simply be re-run later to resume.
+
+        Returns (all_paths, path->classes, path->source_name, failed_sources).
         """
         from g3e_data_engine.downloader import get_downloader, DownloadRequest
 
@@ -216,23 +255,38 @@ class Pipeline:
         all_paths: list[str] = []
         class_by_path: dict[str, list[str]] = {}
         source_by_path: dict[str, str] = {}
+        failed_sources: dict[str, str] = {}
 
-        for source_name, source in self.config.datasets.enabled_sources().items():
+        enabled = self.config.datasets.enabled_sources()
+        print(f"\n=== STAGE: Download ({len(enabled)} enabled source(s)) ===")
+
+        for source_name, source in enabled.items():
             target_for_source = {
                 c: min(remaining_by_class.get(c, 0), source.max_images)
                 for c in source.classes
                 if remaining_by_class.get(c, 0) > 0
             }
             if not target_for_source:
+                print(f"-> {source_name}: skipped (no remaining budget for its classes)")
                 continue
 
-            downloader = get_downloader(source.kind)
-            request = DownloadRequest(
-                source_name=source_name,
-                target_classes=target_for_source,
-                dest_dir=str(raw_dir / source_name),
-            )
-            images = downloader.download(request)
+            print(f"-> {source_name}: starting (kind={source.kind}, target={target_for_source})")
+            try:
+                downloader = get_downloader(source.kind)
+                request = DownloadRequest(
+                    source_name=source_name,
+                    target_classes=target_for_source,
+                    dest_dir=str(raw_dir / source_name),
+                )
+                images = downloader.download(request)
+            except Exception as exc:
+                failed_sources[source_name] = str(exc)
+                print(f"x  {source_name}: FAILED — {exc}")
+                print(
+                    f"   Anything already saved for '{source_name}' before the failure is kept "
+                    f"on disk (see {raw_dir / source_name}/_progress.json) — re-run to resume it."
+                )
+                continue
 
             for img in images:
                 all_paths.append(img.local_path)
@@ -242,4 +296,6 @@ class Pipeline:
                     if c in remaining_by_class:
                         remaining_by_class[c] = max(0, remaining_by_class[c] - 1)
 
-        return all_paths, class_by_path, source_by_path
+            print(f"<- {source_name}: done — {len(images)} image(s) downloaded")
+
+        return all_paths, class_by_path, source_by_path, failed_sources

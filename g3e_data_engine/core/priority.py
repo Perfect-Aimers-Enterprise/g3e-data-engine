@@ -33,6 +33,7 @@ class AllocationResult:
     budgets: list[ClassBudget]
     total_requested: int
     total_allocated: int
+    notes: str = ""
 
     def as_dict(self) -> dict[str, int]:
         return {b.class_name: b.target_images for b in self.budgets}
@@ -125,8 +126,34 @@ class PriorityAllocator:
             for c in classes
         ]
 
+        total_allocated = sum(b.target_images for b in budgets)
+
+        # Transparency note: min_per_class/max_per_class can push the actual
+        # total well away from what was requested — e.g. if min_per_class *
+        # num_classes exceeds a small budget, every class gets clamped up to
+        # the floor and the total ends up bigger than requested; the mirror
+        # case (a huge budget against a small max_per_class) ends up smaller.
+        # This is intentional clamping behavior, not a bug — but it's exactly
+        # the kind of silent surprise that's confusing to discover after the
+        # fact, so it's surfaced here instead of only in the raw numbers.
+        notes = ""
+        if budget_total > 0:
+            deviation = abs(total_allocated - budget_total) / budget_total
+            if deviation > 0.15:
+                direction = "more" if total_allocated > budget_total else "fewer"
+                notes = (
+                    f"Requested {budget_total} total images but allocated {total_allocated} "
+                    f"({direction} than requested). configs/priority.yaml's min_per_class="
+                    f"{min_per_class} / max_per_class={max_per_class} clamped the proportional "
+                    "split — this happens when the budget is small relative to "
+                    "min_per_class \u00d7 number of classes, or large relative to "
+                    "max_per_class \u00d7 number of classes. Adjust the budget or those caps "
+                    "if this isn't what you intended."
+                )
+
         return AllocationResult(
             budgets=budgets,
             total_requested=budget_total,
-            total_allocated=sum(b.target_images for b in budgets),
+            total_allocated=total_allocated,
+            notes=notes,
         )

@@ -46,3 +46,25 @@ def test_min_per_class_is_respected_when_room_allows():
     result = allocator.allocate()
     for b in result.budgets:
         assert b.target_images >= cfg.priority.budget.min_per_class
+
+
+def test_notes_populated_when_small_budget_forces_min_clamp_above_request():
+    """
+    Reproduces the exact confusing case reported against the engine: a
+    small total_images against min_per_class * num_classes causes every
+    class to clamp up to the floor, so total_allocated ends up bigger than
+    total_requested. That must be surfaced, not silent.
+    """
+    cfg = load_engine_config()
+    allocator = PriorityAllocator(cfg)
+    result = allocator.allocate(total_images=1200)  # 8 classes * min_per_class(150) = 1200 floor
+    assert result.total_allocated != result.total_requested
+    assert result.notes != ""
+    assert "min_per_class" in result.notes
+
+
+def test_notes_empty_when_allocation_matches_request_closely():
+    cfg = load_engine_config()
+    allocator = PriorityAllocator(cfg)
+    result = allocator.allocate(total_images=6000)  # the shipped default — no clamping surprise
+    assert result.notes == ""

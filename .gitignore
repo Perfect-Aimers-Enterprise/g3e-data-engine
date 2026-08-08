@@ -18,7 +18,7 @@ metadata/metadata.json
 metadata/stats.json
 metadata/versions.json
 
-# .env
+.env
 .DS_Store
 .pytest_cache/
 .mypy_cache/

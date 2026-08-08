@@ -169,7 +169,29 @@ A source's `auth.required: true` means the engine raises
 letting an anonymous request fail confusingly partway through (this is the
 default for `kind: roboflow`, which has no anonymous read path at all).
 
-## 13. Publishing releases
+## 13. Preflight
+
+Before `Pipeline.run(dry_run=False, ...)` downloads anything, it checks
+every enabled source's downloader dependency (is the package importable?),
+repository/project reference, and license status — all offline, no network
+calls, milliseconds. See `g3e_data_engine/core/preflight.py` and README.md
+"Preflight checks." This exists specifically to catch a missing downloader
+package (e.g. `roboflow` not installed) immediately, rather than after
+other sources have already spent real time downloading.
+
+## 14. Download progress and resumability
+
+Every downloader writes each accepted image to disk and records it in a
+per-source `<dest_dir>/_progress.json` manifest immediately after — not
+batched until the source finishes. On a re-run, a downloader that finds an
+existing manifest resumes from it (skipping already-satisfied classes, and
+for streaming sources, already-scanned rows) instead of starting over. If a
+source's download is interrupted, `Pipeline._download_stage()` records the
+failure in `PipelineRunResult.failed_sources` and continues with the
+remaining sources — one source failing never discards what other sources
+already produced. See `g3e_data_engine/downloader/progress.py`.
+
+## 15. Publishing releases
 
 `g3e_data_engine/exporters/hf_uploader.py` (and `scripts/upload_hf.py`) push
 a release folder to the Hugging Face Hub. Uploading is **never** automatic —

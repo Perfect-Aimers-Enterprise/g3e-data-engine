@@ -20,6 +20,7 @@ def _to_allocate_response(result) -> AllocateResponse:
     return AllocateResponse(
         total_requested=result.total_requested,
         total_allocated=result.total_allocated,
+        notes=result.notes,
         budgets=[
             ClassBudgetOut(
                 class_name=b.class_name,
@@ -79,4 +80,5 @@ def run_pipeline(req: RunPipelineRequest) -> RunPipelineResponse:
         split_counts=({k: len(v) for k, v in result.split.items()} if result.split else None),
         stats=(result.stats or None),
         upload_url=result.upload_url,
+        failed_sources=result.failed_sources,
     )

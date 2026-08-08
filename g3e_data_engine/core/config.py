@@ -183,43 +183,27 @@ class EngineConfig(BaseModel):
 
     def validate_sources_ready(self, source_names: list[str] | None = None) -> None:
         """
-        The "don't download anything until we're sure it's safe to" gate.
+        The "don't download anything until we're sure it's safe to" gate —
+        now a preflight covering THREE things per enabled source, not just
+        two: is the downloader dependency for its `kind` actually installed
+        (this is what silently burns an hour discovering `roboflow` isn't in
+        the environment), does it have a repo/project reference, and is its
+        license verified.
 
         Unlike `validate_cross_refs` (checked on every config load, including
         dry runs and `/pipeline/allocate`), this is only called right before
         the download stage actually executes — so planning/allocation always
-        stays available even while a source is still mid-setup.
+        stays available even while a source is still mid-setup. It runs in
+        milliseconds (no network calls) so a bad environment or config is
+        caught immediately, not after minutes/hours of downloading.
 
         Raises SourceConfigError listing every problem across every source
         at once, so a run never dies partway through, having already
         downloaded from source A only to fail on source B.
         """
-        sources = self.datasets.enabled_sources()
-        if source_names is not None:
-            sources = {k: v for k, v in sources.items() if k in source_names}
+        from g3e_data_engine.core.preflight import run_preflight_or_raise
 
-        problems: list[tuple[str, str]] = []
-        for name, src in sources.items():
-            if src.kind == "huggingface" and not src.hf_repo:
-                problems.append((name, "Source enabled but hf_repo is missing."))
-            elif src.kind == "roboflow" and (not src.project or src.version is None):
-                problems.append((name, "Source enabled but project/version is missing (pin both — don't float a version)."))
-
-            if not src.license.verified:
-                problems.append((
-                    name,
-                    f"Dataset license has not been verified (name={src.license.name!r}). "
-                    "Set license.verified: true in configs/datasets.yaml after reviewing the actual terms.",
-                ))
-
-        if problems:
-            lines = ["G3E DATA ENGINE", ""]
-            for name, msg in problems:
-                lines.append(f"\u2717 {name}")
-                lines.append(f"  {msg}")
-                lines.append("")
-            lines.append("Processing aborted. No data was downloaded.")
-            raise SourceConfigError("\n".join(lines))
+        run_preflight_or_raise(self, source_names)
 
 
 def _read_yaml(path: Path) -> dict:

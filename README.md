@@ -46,16 +46,31 @@ cd g3e-data-engine
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 
-# 1. See the download plan WITHOUT downloading anything
+# If you'll use any roboflow-kind source (e.g. fire_smoke in v1's shipped
+# config), install its extra too — check_sources.py below tells you if you
+# forgot:
+pip install -e ".[dev,roboflow]"
+
+# 1. Preflight: confirm every enabled source can actually run (dependency,
+#    repo/project reference, license) — takes milliseconds, no network.
+python scripts/check_sources.py
+
+# 2. See the download plan WITHOUT downloading anything
 python scripts/run_pipeline.py --dry-run
 
-# 2. Run the tests (all offline, no network needed)
+# 3. Run the tests (all offline, no network needed)
 pytest -q
 
-# 3. Start the API (optional)
+# 4. Start the API (optional)
 uvicorn g3e_data_engine.api.main:app --reload
 # -> open http://localhost:8000/docs
 ```
+
+**Running in Colab or on a fresh cloud box?** Use the same `pip install -e
+".[roboflow]"` extras form there too, then run `python scripts/check_sources.py`
+*before* `run_pipeline.py` — that's what catches a missing downloader
+dependency in milliseconds instead of after other sources have already
+spent minutes/hours downloading.
 
 ### As a library
 
@@ -195,6 +210,111 @@ onto another.
 
 ---
 
+## Preflight checks (catching a missing dependency in milliseconds, not hours)
+
+Real failure this fixes: a run resolved its Hugging Face sources fine, then
+crashed on `from roboflow import Roboflow` an hour in, because the
+`roboflow` package simply wasn't installed in that environment. Before
+`Pipeline.run(dry_run=False, ...)` downloads a single byte, it runs a
+preflight (`core/preflight.py`) that checks, per enabled source:
+
+1. **dependency** — is the package its `kind` needs actually importable?
+2. **repository** — does it have a repo/project reference set?
+3. **license** — has the license been verified?
+
+All three are pure/offline checks (no network calls), so this takes
+milliseconds. Any failure aborts the whole run before anything downloads:
+
+```
+G3E DATA ENGINE — PREFLIGHT
+
+Sources
+────────────────────────────
+✓ coco
+  huggingface dependency     ✓
+  repository                 ✓
+  license                    ✓
+
+✗ weapons
+  huggingface dependency     ✓
+  repository                 ✓
+  license                    ✗
+
+✗ fire_smoke
+  roboflow dependency        ✗
+
+ERROR
+✗ weapons
+  Dataset license has not been verified (name='UNKNOWN — derivative of a
+  Roboflow dataset, terms not yet reviewed'). Set license.verified: true
+  in configs/datasets.yaml after reviewing the actual terms.
+
+✗ fire_smoke
+  Roboflow source is enabled but the `roboflow` package is missing.
+
+  Install:
+  pip install "g3e-data-engine[roboflow]"
+
+Processing aborted. No data was downloaded.
+```
+
+Run this check on its own, any time:
+
+```bash
+python scripts/check_sources.py
+```
+
+On a fresh cloud box or Colab runtime, run this **before** launching the
+full pipeline — if a downloader kind needs a package that isn't installed
+yet (e.g. `pip install -e ".[roboflow]"` wasn't run), you find out
+immediately instead of after other sources have already spent minutes
+downloading.
+
+## Download progress, streaming saves, and resuming an interrupted run
+
+Every downloader:
+
+- Shows a live progress bar (via `tqdm`) while it downloads.
+- Writes each accepted image to disk **immediately** — never buffers a
+  source's images in memory until the whole thing finishes — and records it
+  in a per-source `<dest>/_progress.json` manifest right after. A crash
+  loses at most the one image that was in flight.
+- **Resumes automatically** on the next run: if `_progress.json` already has
+  progress in it, the downloader picks up from there — skipping classes
+  already satisfied, and (for streaming HF sources) skipping past rows it
+  already scanned via the `datasets` library's own `.skip()` — instead of
+  starting that source over from scratch.
+- If a source's download is interrupted (network drop, HF Hub hiccup,
+  etc.), that source returns whatever it already has rather than crashing —
+  **and it doesn't take the rest of the run down with it.** `Pipeline`
+  catches failures per source, logs them, and continues with the remaining
+  sources. Check `result.failed_sources` (a `{source_name: error}` dict) —
+  or in the CLI/console output — to see what failed and re-run later to
+  pick those back up:
+
+```
+=== STAGE: Download (3 enabled source(s)) ===
+-> coco: starting (kind=huggingface, target={'person': 1091, 'car': 545, ...})
+coco: 1091img [00:42, 25.9img/s]
+<- coco: done — 1091 image(s) downloaded
+-> weapons: starting (kind=huggingface, target={'gun': 1091, 'knife': 818, 'person': 1091})
+x  weapons: FAILED — <network error>
+   Anything already saved for 'weapons' before the failure is kept on disk
+   (see datasets/raw/weapons/_progress.json) — re-run to resume it.
+
+[warning] 1 source(s) failed and were skipped (their partial progress is
+preserved on disk — re-run to resume them): ['weapons']
+```
+
+If a resume genuinely isn't worth chasing (e.g. you'd rather start clean),
+just delete that source's folder under `datasets/raw/<source_name>/` and
+re-run — there's no separate "reset" command needed.
+
+Every pipeline stage prints a banner as it starts (`Download`, `Validate`,
+`Deduplicate`, `Metadata & Split`, `Statistics`, `Export`, `Upload to
+Hugging Face`) so a long-running console/Colab session always shows exactly
+where the run is, not just a silent wait.
+
 ## Why is everything capped? (the "don't download a huge dataset" ask)
 
 Three independent caps exist, on purpose, so you have to *deliberately* raise
@@ -268,6 +388,24 @@ any config file:
 ```bash
 python scripts/run_pipeline.py --no-dry-run --total-images 3000 \
     --override fire=2.0 --override gun=2.0 --export
+```
+
+**A note on `min_per_class`/`max_per_class` clamping.** `configs/priority.yaml`'s
+`min_per_class`/`max_per_class` are enforced *after* the proportional split —
+so a small `total_images` against a large `min_per_class × number of classes`
+floor can allocate noticeably *more* than you requested (every class gets
+clamped up to the floor), and the mirror case with `max_per_class` can
+allocate noticeably *less*. This is intentional, but it's exactly the kind
+of thing that's confusing to discover only after staring at the numbers — so
+`AllocationResult.notes` (and the console output of `Pipeline.run()` /
+`scripts/run_pipeline.py`) says so explicitly whenever the deviation is
+large:
+
+```python
+>>> allocator.allocate(total_images=1200).notes
+"Requested 1200 total images but allocated 1432 (more than requested).
+configs/priority.yaml's min_per_class=150 / max_per_class=2500 clamped the
+proportional split — ..."
 ```
 
 ---
