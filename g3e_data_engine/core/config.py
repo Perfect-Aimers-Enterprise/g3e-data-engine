@@ -82,6 +82,7 @@ class SourceDef(BaseModel):
     classes: list[str] = Field(default_factory=list)
     class_map: dict[str, str] = Field(default_factory=dict)  # raw source label -> g3e class name
     max_images: int = 1000
+    max_rows_scanned: int = 50_000  # safety valve — see downloader/hf_downloader.py DEFAULT_MAX_ROWS_SCANNED
     license: LicenseInfo = Field(default_factory=LicenseInfo)
     auth: AuthConfig = Field(default_factory=AuthConfig)
 

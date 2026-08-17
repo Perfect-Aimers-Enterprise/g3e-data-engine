@@ -160,6 +160,30 @@ token" (Roboflow sources set this by default) — the engine raises
 `MissingCredentialError` immediately rather than letting the download fail
 confusingly partway through.
 
+### Running in Google Colab
+
+**Colab's Secrets panel (the key icon in the left sidebar) does NOT
+automatically export to `os.environ`.** It's a separate, per-notebook
+secure store accessed via `google.colab.userdata.get(...)`, and each secret
+has its own "Notebook access" toggle. This is the single most common cause
+of "I definitely set the token and the library still says it's missing."
+
+`get_token()` handles this automatically: if the environment variable isn't
+set, it falls back to checking Colab's secret store under the *same
+variable name*. So all you need is:
+
+1. Open the key icon in the left sidebar.
+2. Add a secret named exactly `HF_TOKEN` (and/or `ROBOFLOW_API_KEY`) with
+   your token as the value.
+3. Toggle **"Notebook access"** on for that secret — this step is easy to
+   miss, and skipping it makes `userdata.get()` fail even though the secret
+   exists. If this happens, the engine prints a specific hint pointing you
+   back to this toggle rather than a generic "missing credential" error.
+
+No extra code needed — you do **not** need to manually do
+`os.environ["HF_TOKEN"] = userdata.get("HF_TOKEN")` yourself, though that
+also works fine if you prefer it explicit.
+
 ---
 
 ## Source readiness (the "don't download from a half-configured or unlicensed source" gate)
@@ -314,6 +338,38 @@ Every pipeline stage prints a banner as it starts (`Download`, `Validate`,
 `Deduplicate`, `Metadata & Split`, `Statistics`, `Export`, `Upload to
 Hugging Face`) so a long-running console/Colab session always shows exactly
 where the run is, not just a silent wait.
+
+### Category/label decoding (why a source might download 0 images and look "stuck")
+
+Most HF object-detection datasets store `objects.category` (and sometimes a
+bare `label`) as an **integer** `ClassLabel` id — e.g. `category: 4`
+meaning `"car"`, not `category: "car"`. If that integer is compared
+directly against G3E's string class names, nothing ever matches, on any
+row — the downloader just streams the entire dataset finding zero images,
+which looks exactly like a hang rather than an error.
+
+The HF downloader resolves these ids to names automatically, once per
+source, from the dataset's `Features` metadata (no extra network call —
+this metadata is already fetched as part of `load_dataset()`). If it can't
+resolve a names table for a source, it prints a warning up front rather
+than silently scanning:
+
+```
+[coco] could not resolve category/label names from this dataset's
+features — if its categories are stored as integers rather than
+strings, no rows may match. If downloads stay at 0 accepted for a
+while, this is almost certainly why; see DATASET_SPEC.md
+'Category/label decoding'.
+```
+
+The download progress bar also counts **rows scanned** (not just accepted
+images), with the accepted count as a live postfix — so a 0-accepted
+scan is visible immediately as `coco: 4213row [00:12, accepted=0]`,
+not just silence. And as a hard backstop, each source stops scanning after
+`max_rows_scanned` (default 50,000; override per-source in
+`configs/datasets.yaml`) rather than running indefinitely if something's
+still wrong — the exact failure mode that used to cost 30+ minutes of
+streaming for zero images.
 
 ## Why is everything capped? (the "don't download a huge dataset" ask)
 

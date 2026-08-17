@@ -7,6 +7,17 @@ remote dataset in memory), filters rows down to the target classes, and
 stops as soon as each class has hit its per-run budget — which is exactly
 what keeps v1 from pulling down more than it needs.
 
+IMPORTANT — category/label decoding: most HF object-detection datasets
+store `objects.category` (and sometimes a bare `label`) as an INTEGER
+`ClassLabel` id, not as a string — e.g. `category: 4` meaning "car", not
+`category: "car"`. Comparing that int directly against G3E's string class
+names always fails silently, which looks exactly like "this dataset has
+none of the classes we want" even though it has plenty — the loop just
+scans the entire dataset finding nothing. This downloader resolves those
+ids to names ONCE, from the dataset's `Features` metadata (already fetched
+locally as part of `load_dataset()` — no extra network call), before
+scanning any rows.
+
 Streaming + resume behavior:
   - Every accepted image is saved to disk AND recorded in
     `<dest_dir>/_progress.json` (see downloader/progress.py) immediately —
@@ -22,6 +33,14 @@ Streaming + resume behavior:
     so far rather than raising — the caller (Pipeline._download_stage) can
     still use those images, and the source can simply be re-run later to
     pick up where it left off.
+  - A `max_rows_scanned` safety cap (see SourceDef) stops the scan if it
+    goes on far longer than should ever be needed — this is what used to
+    let a decoding bug like the one above burn 30+ minutes of streaming
+    with zero images accepted before anyone noticed.
+
+The progress bar counts ROWS SCANNED, with accepted-image-count as a live
+postfix — not just accepted images — specifically so a stuck-at-zero
+acceptance rate is visible immediately instead of looking like a hang.
 
 NOTE: this module imports `datasets`/`huggingface_hub` lazily (inside the
 method, not at module import time) so the rest of the engine — config
@@ -41,11 +60,16 @@ from g3e_data_engine.downloader.base import (
 from g3e_data_engine.core.credentials import get_token, require_token
 from g3e_data_engine.downloader.progress import load_progress, save_progress
 
+DEFAULT_MAX_ROWS_SCANNED = 50_000
+
 
 class _NullBar:
     """Minimal stand-in for a tqdm progress bar if tqdm truly can't be imported."""
 
     def update(self, n: int = 1) -> None:
+        pass
+
+    def set_postfix(self, *args, **kwargs) -> None:
         pass
 
     def close(self) -> None:
@@ -118,16 +142,41 @@ class HFDownloader(Downloader):
         if row_offset:
             ds = ds.skip(row_offset)
 
+        objects_category_names, label_names = _resolve_label_names(ds)
+        if objects_category_names is None and label_names is None:
+            print(
+                f"  [{request.source_name}] could not resolve category/label names from this "
+                "dataset's features — if its categories are stored as integers rather than "
+                "strings, no rows may match. If downloads stay at 0 accepted for a while, this "
+                "is almost certainly why; see DATASET_SPEC.md 'Category/label decoding'."
+            )
+
+        max_rows_scanned = getattr(source, "max_rows_scanned", None) or DEFAULT_MAX_ROWS_SCANNED
         rows_seen_this_call = 0
-        bar = tqdm(desc=f"{request.source_name}", unit="img", initial=len(results), leave=True)
+        bar = tqdm(desc=f"{request.source_name}", unit="row", initial=0, leave=True)
 
         try:
             for row in ds:
                 rows_seen_this_call += 1
+                bar.update(1)
+                bar.set_postfix(accepted=len(results))
+
                 if all(v <= 0 for v in remaining.values()):
                     break  # every target class already satisfied
 
-                row_classes = _extract_class_names(row, source.classes, source.class_map)
+                if rows_seen_this_call >= max_rows_scanned:
+                    print(
+                        f"\n  [{request.source_name}] stopped after scanning {rows_seen_this_call} rows "
+                        f"without filling the remaining target ({remaining}). This usually means "
+                        "category/label decoding isn't matching (see the warning above, if any) "
+                        "rather than the classes genuinely being this rare — check class_map and "
+                        "DATASET_SPEC.md 'Category/label decoding' before raising max_rows_scanned."
+                    )
+                    break
+
+                row_classes = _extract_class_names(
+                    row, source.classes, source.class_map, objects_category_names, label_names
+                )
                 useful = [c for c in row_classes if remaining.get(c, 0) > 0]
                 if not useful:
                     continue
@@ -154,7 +203,7 @@ class HFDownloader(Downloader):
                         raw_annotations=row.get("objects", row.get("annotations", [])) or [],
                     )
                 )
-                bar.update(1)
+                bar.set_postfix(accepted=len(results))
 
                 # Written after EVERY image — not buffered until the source
                 # finishes. A crash on the very next line loses only this
@@ -189,12 +238,94 @@ class HFDownloader(Downloader):
         return results
 
 
-def _extract_class_names(row: dict, allowed: list[str], class_map: dict[str, str] | None = None) -> list[str]:
+def _unwrap_to_names(feature) -> list[str] | None:
+    """
+    HF `Features` wraps things more deeply than a single `.feature` hop —
+    `Sequence({'category': ClassLabel(...), ...})` normalizes to a plain
+    dict whose 'category' entry is itself `List(ClassLabel(...))` (or, on
+    older `datasets` versions, nested `Sequence`/`Value` wrappers). This
+    walks `.feature` until it finds something with a `.names` list (a
+    ClassLabel) or gives up — bounded so a weird/cyclic feature graph can
+    never hang.
+    """
+    current = feature
+    seen: set[int] = set()
+    for _ in range(10):
+        if current is None:
+            return None
+        names = getattr(current, "names", None)
+        if names:
+            return list(names)
+        nxt = getattr(current, "feature", None)
+        if nxt is None or id(nxt) in seen:
+            return None
+        seen.add(id(nxt))
+        current = nxt
+    return None
+
+
+def _resolve_label_names(ds) -> tuple[list[str] | None, list[str] | None]:
+    """
+    Pulls the int->name mapping for `objects.category` and/or a bare
+    `label` field out of the dataset's Features metadata, if present.
+    Returns (objects_category_names, label_names) — either may be None if
+    that field doesn't exist or isn't a decodable ClassLabel.
+
+    This never triggers a network call beyond what `load_dataset()` already
+    did — Features come from metadata HF's client fetches up front
+    (dataset_infos.json / the parquet schema), not from row data.
+    """
+    features = getattr(ds, "features", None)
+    if not features:
+        return None, None
+
+    objects_category_names = None
+    try:
+        objects_feature = features.get("objects")
+        if objects_feature is None:
+            objects_feature = features.get("annotations")
+
+        cat_feature = None
+        if isinstance(objects_feature, dict):
+            cat_feature = objects_feature.get("category")
+        elif objects_feature is not None:
+            inner = getattr(objects_feature, "feature", None)
+            if isinstance(inner, dict):
+                cat_feature = inner.get("category")
+            else:
+                cat_feature = inner
+
+        objects_category_names = _unwrap_to_names(cat_feature)
+    except Exception:
+        objects_category_names = None
+
+    label_names = None
+    try:
+        label_feature = features.get("label")
+        label_names = _unwrap_to_names(label_feature)
+    except Exception:
+        label_names = None
+
+    return objects_category_names, label_names
+
+
+def _extract_class_names(
+    row: dict,
+    allowed: list[str],
+    class_map: dict[str, str] | None = None,
+    objects_category_names: list[str] | None = None,
+    label_names: list[str] | None = None,
+) -> list[str]:
     """
     Best-effort extraction of which of `allowed` (G3E) classes appear in a HF
     dataset row. Different HF vision datasets use different schemas
     (categories, objects.category, label, etc.) — extend this function, not
     the downloader class, when wiring up a new dataset's schema.
+
+    Categories/labels are frequently integers (ClassLabel ids) rather than
+    strings — `objects_category_names`/`label_names` (resolved once via
+    `_resolve_label_names`) translate them to strings before anything else
+    happens. Sources that already yield plain strings work unchanged.
 
     `class_map` translates a source's own label spelling (e.g. "GUN") to the
     G3E class name (e.g. "gun") — see configs/datasets.yaml -> sources.*.class_map.
@@ -205,27 +336,40 @@ def _extract_class_names(row: dict, allowed: list[str], class_map: dict[str, str
     def _translate(raw: str) -> str:
         return class_map.get(raw, raw)
 
+    def _decode(value, names: list[str] | None) -> str | None:
+        if isinstance(value, str):
+            return value
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, int) and names is not None and 0 <= value < len(names):
+            return names[value]
+        return None
+
     found: set[str] = set()
 
     label = row.get("label")
-    if isinstance(label, str):
-        translated = _translate(label)
-        if translated in allowed:
-            found.add(translated)
+    if label is not None:
+        decoded = _decode(label, label_names)
+        if decoded is not None:
+            translated = _translate(decoded)
+            if translated in allowed:
+                found.add(translated)
 
     for key in ("objects", "annotations"):
         objs = row.get(key)
         if isinstance(objs, dict) and "category" in objs:
             for cat in objs["category"]:
-                if isinstance(cat, str):
-                    translated = _translate(cat)
+                decoded = _decode(cat, objects_category_names)
+                if decoded is not None:
+                    translated = _translate(decoded)
                     if translated in allowed:
                         found.add(translated)
         elif isinstance(objs, list):
             for obj in objs:
                 cat = obj.get("category") if isinstance(obj, dict) else None
-                if isinstance(cat, str):
-                    translated = _translate(cat)
+                decoded = _decode(cat, objects_category_names)
+                if decoded is not None:
+                    translated = _translate(decoded)
                     if translated in allowed:
                         found.add(translated)
 

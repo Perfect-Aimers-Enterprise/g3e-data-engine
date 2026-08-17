@@ -7,6 +7,26 @@ intentionally deferred.
 
 ## Done since initial v1 draft
 
+- [x] **Category/label decoding fix** — the root cause of a real production
+  failure: HF object-detection datasets store `objects.category` (and
+  sometimes `label`) as an integer `ClassLabel` id, not a string; comparing
+  it directly against G3E's string class names silently matched nothing on
+  every row, so a source would stream its entire dataset (30+ minutes, in
+  the reported case) and accept zero images with no indication why. Fixed
+  in `downloader/hf_downloader.py` (`_resolve_label_names` /
+  `_extract_class_names`), covered by `tests/test_hf_label_decoding.py`
+  using the real `datasets.Features`/`ClassLabel` classes. Also added a
+  `max_rows_scanned` safety cap (default 50,000) and a rows-scanned
+  progress bar (not just accepted-images) so a 0%-match-rate source is
+  visible in seconds, not after 30+ minutes.
+- [x] **Colab Secrets fallback for credentials** — root cause of a second
+  reported issue ("I set the token but the library says it's missing"):
+  Colab's Secrets panel doesn't export to `os.environ`. `get_token()` now
+  falls back to `google.colab.userdata.get(...)` under the same variable
+  name when the env var isn't set, with a specific hint if the secret
+  exists but "Notebook access" isn't toggled on. Covered by
+  `tests/test_colab_credentials.py` using a fake `google.colab` module
+  (the real package only exists inside Colab).
 - [x] **Preflight checks** (`core/preflight.py`) — dependency (is the
   package a source's `kind` needs actually importable?), repository
   (repo/project reference set?), and license (verified?) — checked in

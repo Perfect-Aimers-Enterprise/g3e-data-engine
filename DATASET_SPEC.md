@@ -179,7 +179,24 @@ calls, milliseconds. See `g3e_data_engine/core/preflight.py` and README.md
 package (e.g. `roboflow` not installed) immediately, rather than after
 other sources have already spent real time downloading.
 
-## 14. Download progress and resumability
+## 14. Category/label decoding
+
+HF object-detection datasets frequently store `objects.category` (and
+sometimes a bare `label`) as an **integer** `ClassLabel` id, not a string —
+resolvable via that field's `Features` metadata (`.names`), not from row
+data itself. `g3e_data_engine/downloader/hf_downloader.py` resolves this
+mapping once per source, before scanning any rows, and applies it ahead of
+`class_map` translation. A source whose categories are already plain
+strings (no `ClassLabel`) works unchanged — decoding is a no-op in that
+case. See `_resolve_label_names` / `_extract_class_names` in that module,
+and `tests/test_hf_label_decoding.py` for the exact schema shapes handled.
+
+If a source's names table can't be resolved at all, the downloader logs a
+warning instead of silently scanning; a `max_rows_scanned` safety cap
+(`SourceDef.max_rows_scanned`, default 50,000) also stops a scan that's
+clearly not finding matches, rather than running indefinitely.
+
+## 15. Download progress and resumability
 
 Every downloader writes each accepted image to disk and records it in a
 per-source `<dest_dir>/_progress.json` manifest immediately after — not
@@ -191,7 +208,7 @@ failure in `PipelineRunResult.failed_sources` and continues with the
 remaining sources — one source failing never discards what other sources
 already produced. See `g3e_data_engine/downloader/progress.py`.
 
-## 15. Publishing releases
+## 16. Publishing releases
 
 `g3e_data_engine/exporters/hf_uploader.py` (and `scripts/upload_hf.py`) push
 a release folder to the Hugging Face Hub. Uploading is **never** automatic —

@@ -16,6 +16,16 @@ Design:
 - A token is optional unless the source config says `auth.required: true`,
   or the caller explicitly calls `require_token(...)` (as the HF uploader
   does — you cannot push to Hugging Face anonymously).
+- In Google Colab specifically: the Secrets panel (key icon in the left
+  sidebar) does NOT automatically export to `os.environ` — it's a separate
+  store accessed via `google.colab.userdata.get(...)`, and per-notebook
+  access has to be toggled on for each secret. This is a very common cause
+  of "I definitely set the token but the library says it's missing." When
+  `os.environ` doesn't have the variable, `get_token` automatically falls
+  back to checking Colab's secret store under the same variable name (see
+  `_try_colab_secret` below) — no extra code needed on your end beyond
+  naming the Colab secret the same as the env var (e.g. `HF_TOKEN`) and
+  making sure its notebook-access toggle is on.
 
 Usage:
 
@@ -73,6 +83,39 @@ def _load_dotenv_once() -> None:
             load_dotenv(candidate, override=False)
 
 
+def _try_colab_secret(env_var: str) -> str | None:
+    """
+    Fallback for Google Colab's Secrets panel, which stores values in a
+    per-notebook secure store that is NOT exported to `os.environ`
+    automatically. If `google.colab` isn't importable (i.e. this isn't
+    Colab), this is a silent no-op — never a hard dependency.
+
+    If the secret exists but this notebook hasn't been granted access to it
+    yet (the "Notebook access" toggle in the Secrets panel), Colab raises
+    its own access-error rather than just returning None — that case is
+    caught separately so the person gets a specific, actionable hint
+    instead of a generic "credential missing" message.
+    """
+    try:
+        from google.colab import userdata
+    except ImportError:
+        return None
+
+    try:
+        value = userdata.get(env_var)
+        return value or None
+    except Exception as exc:
+        if type(exc).__name__ == "NotebookAccessError":
+            print(
+                f"  [credentials] Found a Colab secret named '{env_var}' but this notebook "
+                "doesn't have permission to use it yet — click the key icon in the left "
+                f"sidebar and toggle 'Notebook access' on for '{env_var}'."
+            )
+        # SecretNotFoundError and anything else: treat the same as "not set
+        # anywhere" and let the normal missing-credential path handle it.
+        return None
+
+
 def _env_var_for(kind: str, source) -> str:
     """
     `source` may be a SourceDef (has `.auth.token_env`), an AuthConfig
@@ -88,10 +131,18 @@ def _env_var_for(kind: str, source) -> str:
 
 
 def get_token(kind: str, source=None) -> str | None:
-    """Return the token for `kind`, or None if it isn't set anywhere."""
+    """
+    Return the token for `kind`, or None if it isn't set anywhere.
+    Checks, in order: the environment variable (including anything loaded
+    from a local `.env` file), then — only if that's empty — Colab's
+    Secrets panel under the same variable name.
+    """
     _load_dotenv_once()
     env_var = _env_var_for(kind, source)
-    return os.environ.get(env_var) or None
+    token = os.environ.get(env_var)
+    if not token:
+        token = _try_colab_secret(env_var)
+    return token or None
 
 
 def require_token(kind: str, source=None) -> str:
@@ -102,8 +153,11 @@ def require_token(kind: str, source=None) -> str:
         raise MissingCredentialError(
             f"No credential found for kind={kind!r}. Set the {env_var} "
             "environment variable (directly, or via a .env file in the repo "
-            "root — see .env.example), or set `auth.token_env` for this "
-            "source in configs/datasets.yaml if it should read a different variable."
+            "root — see .env.example); in Google Colab, add a secret named "
+            f"'{env_var}' in the Secrets panel (key icon, left sidebar) and "
+            "make sure its 'Notebook access' toggle is on; or set "
+            "`auth.token_env` for this source in configs/datasets.yaml if "
+            "it should read a different variable."
         )
     return token
 
