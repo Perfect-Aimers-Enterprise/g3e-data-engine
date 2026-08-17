@@ -78,7 +78,4 @@ sources:
       token_env: "ROBOFLOW_API_KEY"
       required: true # Roboflow's API has no anonymous read path
 
-# Absolute safety valve. The pipeline refuses to schedule more than this
-# many total images across ALL sources in a single run, regardless of what
-# the per-source caps above add up to.
 global_max_images: 8000
