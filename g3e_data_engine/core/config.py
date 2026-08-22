@@ -7,7 +7,6 @@ DATASET_SPEC.md for what each field means and why it exists.
 """
 from __future__ import annotations
 
-import functools
 from pathlib import Path
 from typing import Optional
 
@@ -99,8 +98,7 @@ class DatasetsConfig(BaseModel):
 # processing.yaml
 # ---------------------------------------------------------------------------
 class ImageThresholds(BaseModel):
-    min_width: int = 640
-    min_height: int = 640
+    min_shorter_side: int = 416
     blur_threshold: float = 90.0
     max_brightness: float = 250.0
     min_brightness: float = 35.0
@@ -214,16 +212,51 @@ def _read_yaml(path: Path) -> dict:
         return yaml.safe_load(f) or {}
 
 
-@functools.lru_cache(maxsize=8)
+_CONFIG_FILENAMES = ("classes.yaml", "datasets.yaml", "processing.yaml", "priority.yaml")
+_config_cache: dict[str, tuple[tuple, EngineConfig]] = {}
+
+
+def _fingerprint(base: Path) -> tuple:
+    """
+    (mtime_ns, size) per config file — NOT just a directory-path cache key.
+    A plain `functools.lru_cache` keyed only on `configs_dir` was the exact
+    bug behind a real failure: someone edited configs/datasets.yaml (e.g.
+    flipping license.verified: true after a review) in the same running
+    process/notebook that had already called load_engine_config() once —
+    every subsequent call kept returning the pre-edit config, silently,
+    because the cache had no way to know the files on disk had changed.
+    This fingerprints the actual files so an edit is picked up automatically
+    on the very next call, with no manual cache-clearing required.
+    """
+    parts = []
+    for name in _CONFIG_FILENAMES:
+        path = base / name
+        if path.exists():
+            st = path.stat()
+            parts.append((name, st.st_mtime_ns, st.st_size))
+        else:
+            parts.append((name, None, None))
+    return tuple(parts)
+
+
 def load_engine_config(configs_dir: Optional[str] = None) -> EngineConfig:
     """
     Load and validate the full engine configuration from configs/*.yaml.
 
-    Cached by `configs_dir` so repeated calls (e.g. from every route handler)
-    don't re-parse YAML on every request. Call
-    `load_engine_config.cache_clear()` in tests if you need a fresh read.
+    Cached per `configs_dir`, but the cache is invalidated automatically
+    whenever any of the four config files' modification time or size
+    changes — so editing a yaml file and calling this again always sees the
+    edit, even within the same long-running process (a notebook kernel, an
+    API server, etc.). Repeated calls with unchanged files stay cheap
+    (no re-parsing), so this costs nothing in the common case.
     """
     base = Path(configs_dir) if configs_dir else CONFIGS_DIR
+    key = str(base)
+    fingerprint = _fingerprint(base)
+
+    cached = _config_cache.get(key)
+    if cached is not None and cached[0] == fingerprint:
+        return cached[1]
 
     classes = ClassesConfig(**_read_yaml(base / "classes.yaml"))
     datasets = DatasetsConfig(**_read_yaml(base / "datasets.yaml"))
@@ -234,4 +267,16 @@ def load_engine_config(configs_dir: Optional[str] = None) -> EngineConfig:
         classes=classes, datasets=datasets, processing=processing, priority=priority
     )
     cfg.validate_cross_refs()
+
+    _config_cache[key] = (fingerprint, cfg)
     return cfg
+
+
+def clear_config_cache() -> None:
+    """
+    Explicit escape hatch — mainly for tests that write config files and
+    need a guaranteed-fresh read regardless of filesystem mtime resolution.
+    Normal usage never needs to call this; editing a config file and calling
+    load_engine_config() again is enough (see `_fingerprint`).
+    """
+    _config_cache.clear()

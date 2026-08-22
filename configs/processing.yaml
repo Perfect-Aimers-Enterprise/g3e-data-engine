@@ -1,7 +1,14 @@
 # g3e-data-engine — Processing thresholds
 image:
-  min_width: 640
-  min_height: 640
+  # Checked against min(width, height) — the SHORTER side — not width and
+  # height independently. A "min_width: 640, min_height: 640"-style check
+  # requires BOTH dimensions to clear 640, which only near-square images
+  # satisfy; it silently rejected the large majority of completely normal
+  # 640x480 / 480x640 photos (COCO's most common shape). 416 accepts
+  # typical photos at any aspect ratio while still filtering out thumbnails
+  # and small crops. Raise it if you specifically need larger source images
+  # (e.g. training at a higher target resolution).
+  min_shorter_side: 416
   blur_threshold: 90        # Laplacian variance below this => rejected as blurry
   max_brightness: 250
   min_brightness: 35

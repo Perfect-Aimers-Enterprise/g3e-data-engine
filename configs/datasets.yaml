@@ -18,18 +18,23 @@
 # the `auth` block per source and README.md "Credentials".
 
 sources:
+
   coco:
     enabled: true
     kind: huggingface
     hf_repo: "detection-datasets/coco"
     classes: [person, car, dog, cat]
-    max_images: 4000 # repo is ~20GB total — this cap is load-bearing, don't drop it
+    # detection-datasets/coco has ~117k training rows — 20000 is a small
+    # slice of that, raised from an earlier, overly conservative 4000 now
+    # that v1's capacity ceiling (global_max_images, below) supports
+    # requesting much more per run.
+    max_images: 20000
     license:
       name: "CC BY 4.0"
       verified: true
       url: "https://huggingface.co/datasets/detection-datasets/coco"
     auth:
-      token_env: "HF_TOKEN" # optional for this public dataset; improves rate limits when set
+      token_env: "HF_TOKEN"   # optional for this public dataset; improves rate limits when set
       required: false
 
   # Consolidated GUN / KNIFE / PERSON weapon-detection set (Roboflow-derived,
@@ -49,10 +54,13 @@ sources:
       GUN: gun
       KNIFE: knife
       PERSON: person
-    max_images: 2000
+    # This source has only ~7,615 rows total (it's a small, consolidated
+    # weapon-detection set) — 7000 leaves a small margin below the dataset's
+    # actual size rather than requesting more than physically exists.
+    max_images: 7000
     license:
-      name: "Apache-2.0"
-      verified: true
+      name: "UNKNOWN — derivative of a Roboflow dataset, terms not yet reviewed"
+      verified: false
       url: "https://huggingface.co/datasets/Subh775/WeaponDetection_Grouped"
     auth:
       token_env: "HF_TOKEN"
@@ -69,13 +77,23 @@ sources:
     project: "fire-rqbio/fire-and-smoke-yikzn"
     version: 3
     classes: [fire, smoke]
-    max_images: 2000
+    # Roboflow project lists ~3,884 images total — 3500 leaves a small
+    # margin below the dataset's actual size.
+    max_images: 3500
     license:
-      name: "CC BY 4.0"
-      verified: true
+      name: "CC BY 4.0 (per project listing — verify on the pinned version page before enabling)"
+      verified: false
       url: "https://universe.roboflow.com/fire-rqbio/fire-and-smoke-yikzn"
     auth:
       token_env: "ROBOFLOW_API_KEY"
-      required: true # Roboflow's API has no anonymous read path
+      required: true          # Roboflow's API has no anonymous read path
 
-global_max_images: 8000
+# Absolute safety valve. The pipeline refuses to schedule more than this
+# many total images across ALL sources in a single run, regardless of what
+# the per-source caps above add up to. Raised from an earlier, overly
+# conservative 8000 — v1 can now genuinely be asked for up to 50,000 images
+# in one run (pass total_images=50000 to Pipeline.run() / --total-images
+# on the CLI / in the API request body); this is a CEILING, not a default —
+# the actual default request size is configs/priority.yaml's
+# budget.total_images, which stays modest.
+global_max_images: 50000

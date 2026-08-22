@@ -1,6 +1,18 @@
 """
 Image quality validation: resolution, blur, brightness.
 
+Resolution is checked against the SHORTER side of the image, not width and
+height independently. Rejecting on `width < X or height < X` effectively
+demands both dimensions clear the same bar — which only near-square images
+satisfy. A completely ordinary 640x480 (or 480x640) photo, the single most
+common shape in datasets like COCO, would fail a `min_width=640,
+min_height=640` check even though it's a perfectly good image; that
+mismatch was a real bug (see DATASET_SPEC.md section 4) that silently threw
+away the large majority of otherwise-valid downloaded images. Checking
+`min(width, height)` against one threshold is aspect-ratio-independent and
+matches how "is this image high enough resolution to be useful" actually
+gets judged in practice.
+
 Blur detection uses Laplacian variance (a lightweight, dependency-light
 proxy for sharpness) computed with numpy convolution instead of pulling in
 OpenCV, so the engine's dependency footprint stays small.
@@ -59,8 +71,11 @@ def validate_image(path: str | Path, thresholds: ImageThresholds) -> ValidationR
     except (FileNotFoundError, UnidentifiedImageError, OSError) as exc:
         return ValidationResult(path=path, accepted=False, reasons=[f"corrupted_or_unreadable: {exc}"])
 
-    if width < thresholds.min_width or height < thresholds.min_height:
-        reasons.append(f"resolution_too_low ({width}x{height})")
+    if min(width, height) < thresholds.min_shorter_side:
+        reasons.append(
+            f"resolution_too_low (shorter_side={min(width, height)}, image={width}x{height}, "
+            f"min_shorter_side={thresholds.min_shorter_side})"
+        )
 
     brightness = float(arr.mean())
     if brightness < thresholds.min_brightness:

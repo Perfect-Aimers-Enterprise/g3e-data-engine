@@ -42,10 +42,29 @@ every already-exported release. To add a class, append it with the next free
 
 | Check       | Default | Rejected when |
 |-------------|---------|---------------|
-| Resolution  | `min_width=640`, `min_height=640` | either dimension is smaller |
+| Resolution  | `min_shorter_side=416` | `min(width, height)` is smaller — checked against the SHORTER side, not width/height independently |
 | Blur        | `blur_threshold=90` (Laplacian variance) | score is below the threshold |
 | Brightness  | `min_brightness=35`, `max_brightness=250` | mean grayscale value outside range |
 | Corruption  | n/a | file fails to open/decode |
+
+**Why shorter-side, not width-AND-height:** an earlier version checked
+`width < 640 or height < 640`, which effectively requires *both* dimensions
+to clear the same bar — only near-square images satisfy that. A completely
+ordinary 640×480 or 480×640 photo (the single most common shape in
+datasets like COCO) failed it, which in production silently rejected the
+large majority of otherwise-valid downloaded images with no visibility into
+why until someone went digging through `metadata/stats.json`. Checking
+`min(width, height)` against one threshold is aspect-ratio-independent and
+matches how "is this image high-enough-resolution to be useful" is actually
+judged. The Validate stage now also prints a live rejection breakdown
+(`low_resolution` / `blurry` / `dark_or_bright` / `corrupted` counts) **and
+the measured p10/median/p90 of shorter-side and blur score for the actual
+batch**, printed next to each threshold, as soon as it runs — rather than
+only being discoverable after the fact via `metadata/stats.json`, and
+rather than requiring another guess at what the right threshold should be.
+Tune thresholds from those measured numbers for a specific source, not from
+a number that sounds reasonable in the abstract — that's how this engine
+ended up with an overly strict default more than once.
 
 Rejected images are counted (see `metadata/stats.json`) but not silently
 dropped without a trace — every rejection has a `reason` string attached
@@ -195,6 +214,17 @@ If a source's names table can't be resolved at all, the downloader logs a
 warning instead of silently scanning; a `max_rows_scanned` safety cap
 (`SourceDef.max_rows_scanned`, default 50,000) also stops a scan that's
 clearly not finding matches, rather than running indefinitely.
+
+## 14a. Config caching
+
+`load_engine_config()` caches the parsed config per `configs_dir`, but the
+cache is fingerprinted on each of the four config files' modification time
+and size — editing any of them and calling `load_engine_config()` again
+always sees the edit, including within the same long-running process (a
+notebook kernel, an API server). There is no manual cache-invalidation step
+required for normal use; `clear_config_cache()` exists as an explicit
+escape hatch (mainly useful in tests). See
+`tests/test_config_cache_invalidation.py`.
 
 ## 15. Download progress and resumability
 

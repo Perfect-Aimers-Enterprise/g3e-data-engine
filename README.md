@@ -294,6 +294,18 @@ yet (e.g. `pip install -e ".[roboflow]"` wasn't run), you find out
 immediately instead of after other sources have already spent minutes
 downloading.
 
+### If you just edited `configs/datasets.yaml` and preflight still shows the old values
+
+Config files are cached (so repeated calls don't re-parse YAML on every
+request), but the cache automatically invalidates itself whenever any of
+the four config files' modification time or size changes — so editing
+`configs/datasets.yaml` and calling `load_engine_config()` again picks up
+the edit immediately, even within the same running notebook kernel or API
+server process. No restart, no manual cache-clearing needed.
+
+If you're ever unsure, `from g3e_data_engine import clear_config_cache;
+clear_config_cache()` forces a guaranteed-fresh read on the next call.
+
 ## Download progress, streaming saves, and resuming an interrupted run
 
 Every downloader:
@@ -338,6 +350,52 @@ Every pipeline stage prints a banner as it starts (`Download`, `Validate`,
 `Deduplicate`, `Metadata & Split`, `Statistics`, `Export`, `Upload to
 Hugging Face`) so a long-running console/Colab session always shows exactly
 where the run is, not just a silent wait.
+
+### Why images get rejected (and why the resolution check uses the shorter side)
+
+The Validate stage prints a live breakdown of *why* images were rejected —
+plus the **actual measured distribution** of shorter-side and blur score
+across the batch, not just an accept/reject count — the moment it finishes:
+
+```
+=== STAGE: Validate (714 downloaded image(s)) ===
+    accepted: 612 / 714
+    measured shorter-side: p10=380 median=480 p90=640 (threshold: min_shorter_side=416)
+    measured blur score:   p10=110.2 median=340.5 p90=920.1 (threshold: blur_threshold=90.0)
+    rejected breakdown: {'low_resolution': 58, 'blurry': 31, 'dark_or_bright': 13}
+```
+
+This is deliberate: tuning `configs/processing.yaml` from a guess (even a
+reasonable-sounding one) is how this engine ended up with an overly strict
+default twice. Comparing the measured percentiles against the threshold
+tells you immediately whether a check is well-calibrated for a given
+source or needs adjusting — look at *this source's actual numbers*, not a
+number that sounded right in the abstract. The engine also warns
+explicitly if more than half of a batch was rejected, so a miscalibrated
+threshold is obvious immediately instead of only showing up as a
+suspiciously small final dataset.
+
+Resolution is checked against `min(width, height)` — the shorter side —
+not width and height independently: a `min_width=640, min_height=640`-style
+check demands both dimensions individually clear 640, which only
+near-square images satisfy. An ordinary 640×480 or 480×640 photo (the
+single most common shape in datasets like COCO) fails a check like that
+even though it's a perfectly good image. `configs/processing.yaml`'s
+`image.min_shorter_side` (default `416`) avoids this — see
+DATASET_SPEC.md section 4 for the full reasoning.
+
+### If a fix doesn't seem to have taken effect (Colab/Jupyter stale-code gotcha)
+
+Every run prints `g3e-data-engine v{version}` as its very first line. If
+you've pulled updated code but the *behavior* still looks like the old
+version — e.g. no rejection breakdown printed at all despite images being
+rejected — check that version line first. **Replacing files on disk in a
+notebook is not enough**: Python/Jupyter/Colab caches already-imported
+modules in memory, so `import g3e_data_engine` after an update can silently
+keep running the OLD in-memory code even though the files changed. Restart
+the runtime (**Runtime → Restart session** in Colab, or restart the
+kernel) after updating the repo, then re-run — don't just re-execute the
+same cells.
 
 ### Category/label decoding (why a source might download 0 images and look "stuck")
 
@@ -384,9 +442,17 @@ more than one of them before a run gets big:
    number actually requested for a given run; must be `<= global_max_images`
    (enforced at config-load time — the engine refuses to start otherwise).
 
-v1 ships with a **6,000 image budget** against an **8,000 image global cap** —
-small enough to run comfortably from a laptop-triggered cloud job, big enough
-to be a genuinely useful first training set.
+v1 ships with a **6,000 image default request budget** against a **50,000
+image global ceiling** — the default stays modest for a first-ever run, but
+the ceiling is high enough to request a genuinely large training set
+(`total_images=50000`) once you're past initial testing, accounting for the
+fact that quality filtering + dedup will reject a meaningful fraction of
+whatever gets downloaded (see "Why images get rejected" above) — requesting
+more than you need is expected, not a mistake. Per-source caps are set
+relative to each source's actual known size (e.g. `coco: 20000` against its
+~117k rows, `weapons: 7000` against its ~7,615 total rows, `fire_smoke:
+3500` against its ~3,884 images) — raise `global_max_images` further if you
+add bigger sources later.
 
 ## Dataset sources (v1)
 

@@ -7,6 +7,58 @@ intentionally deferred.
 
 ## Done since initial v1 draft
 
+- [x] **Measured diagnostics in the Validate stage** — printing an
+  accept/reject count alone wasn't enough to tune anything; the stage now
+  prints the actual measured p10/median/p90 of shorter-side and blur score
+  for the batch, right next to each threshold, so tuning
+  `configs/processing.yaml` is based on a specific source's real numbers
+  instead of another guess. Covered by
+  `tests/test_pipeline.py::test_validate_stage_prints_measured_diagnostics`.
+- [x] **Version banner** — every `Pipeline.run()` and `scripts/check_sources.py`
+  invocation now prints `g3e-data-engine v{version}` as its first line, so
+  a stale-cached-code situation (a real, repeatedly-hit Colab/Jupyter
+  gotcha — replacing files on disk doesn't reload already-imported modules
+  without a runtime restart) is immediately diagnosable instead of looking
+  like a fix silently not working.
+- [x] **Raised v1 capacity** — `global_max_images` 8,000 → 50,000 (the
+  ceiling a single run can request; the default request size,
+  `priority.yaml`'s `budget.total_images`, stays at a modest 6,000).
+  Per-source `max_images` raised to match each source's actual known size
+  (`coco`: 20,000 of ~117k rows; `weapons`: 7,000 of ~7,615 rows;
+  `fire_smoke`: 3,500 of ~3,884 images) rather than the earlier, overly
+  conservative caps. `priority.yaml`'s `max_per_class` raised 2,500 →
+  20,000 so a large `total_images` request isn't needlessly clamped
+  per-class.
+
+- [x] **Resolution check fixed to use the shorter side, not width-AND-height**
+  — the root cause of a real production run accepting only 48/714 (6.7%)
+  of downloaded images. The old `min_width=640, min_height=640` check
+  required BOTH dimensions to clear 640, which only near-square images
+  satisfy — an ordinary 640x480 photo (COCO's most common shape) failed it.
+  Replaced with a single `min_shorter_side` (default 416) checked against
+  `min(width, height)`, which is aspect-ratio-independent. Also added a
+  live rejection breakdown printed during the Validate stage (was
+  previously only visible by reading `metadata/stats.json` after the
+  fact), plus a warning when acceptance rate is under 50%. Covered by
+  `tests/test_validators.py`.
+- [x] **Friendlier Roboflow error messages** — an invalid/revoked API key
+  used to surface as Roboflow's raw JSON error body
+  (`{"error":{"message":"This API key does not exist..."}}`) with no
+  indication of what to fix. `_friendly_roboflow_error()` translates
+  recognizable cases (bad/revoked key, project/version not found) into a
+  message naming the actual next step.
+- [x] **Config cache invalidation fix** — the root cause of a real
+  reported bug: `load_engine_config()` used a plain `functools.lru_cache`
+  keyed only on the configs directory path, so editing
+  `configs/datasets.yaml` in the same running process (e.g. flipping
+  `license.verified: true` after actually reviewing a source, in the same
+  notebook kernel that had already loaded the config once) kept silently
+  returning the pre-edit config — the person would see a preflight failure
+  quoting license text they'd already replaced. Fixed by fingerprinting
+  each config file's `(mtime_ns, size)` and auto-invalidating on change;
+  `clear_config_cache()` added as an explicit escape hatch. Covered by
+  `tests/test_config_cache_invalidation.py`.
+
 - [x] **Category/label decoding fix** — the root cause of a real production
   failure: HF object-detection datasets store `objects.category` (and
   sometimes `label`) as an integer `ClassLabel` id, not a string; comparing

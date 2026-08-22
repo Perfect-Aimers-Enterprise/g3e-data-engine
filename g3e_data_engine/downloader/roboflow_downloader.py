@@ -117,13 +117,17 @@ class RoboflowDownloader(Downloader):
             return results
 
         workspace_slug, project_slug = source.project.split("/", 1)
-        rf = Roboflow(api_key=api_key)
-        project = rf.workspace(workspace_slug).project(project_slug)
-        version = project.version(source.version)
+        try:
+            rf = Roboflow(api_key=api_key)
+            project = rf.workspace(workspace_slug).project(project_slug)
+            version = project.version(source.version)
 
-        # YOLOv8 export gives us: <export_root>/{train,valid,test}/images/*.jpg
-        # and matching .../labels/*.txt, plus a data.yaml with the class list.
-        downloaded = version.download("yolov8", location=str(dest / "_roboflow_export"))
+            # YOLOv8 export gives us: <export_root>/{train,valid,test}/images/*.jpg
+            # and matching .../labels/*.txt, plus a data.yaml with the class list.
+            downloaded = version.download("yolov8", location=str(dest / "_roboflow_export"))
+        except Exception as exc:
+            raise RuntimeError(_friendly_roboflow_error(exc, request.source_name, source)) from exc
+
         export_root = Path(downloaded.location)
         class_names = _read_class_names(export_root / "data.yaml")
 
@@ -200,6 +204,34 @@ class RoboflowDownloader(Downloader):
             completed=True,
         )
         return results
+
+
+def _friendly_roboflow_error(exc: Exception, source_name: str, source) -> str:
+    """
+    The Roboflow SDK's own exceptions often surface as a raw JSON error
+    body from its API (e.g. `{"error":{"message":"This API key does not
+    exist (or has been revoked)."...}}`) with no indication of which
+    credential or config to fix. This translates the common, recognizable
+    cases into a message that names the actual next step.
+    """
+    text = str(exc)
+    env_var = source.auth.token_env or "ROBOFLOW_API_KEY"
+
+    if "does not exist" in text or "revoked" in text or "401" in text:
+        return (
+            f"Roboflow rejected the API key configured for source '{source_name}' "
+            f"({env_var}) — it may be invalid, revoked, or lack access to this "
+            f"project. Get a current key from https://app.roboflow.com/settings/api "
+            f"(Account > Roboflow Keys) and update {env_var} (env var, .env file, or "
+            "Colab secret), then re-run — see README.md 'Credentials'."
+        )
+    if "not found" in text.lower() or "404" in text:
+        return (
+            f"Roboflow could not find project/version '{source.project}' v{source.version} "
+            f"for source '{source_name}' — double-check `project` and `version` in "
+            "configs/datasets.yaml against the actual Roboflow Universe page."
+        )
+    return f"Roboflow request failed for source '{source_name}': {text}"
 
 
 def _read_class_names(data_yaml_path: Path) -> list[str]:

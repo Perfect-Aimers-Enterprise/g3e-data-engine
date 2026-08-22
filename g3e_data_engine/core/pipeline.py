@@ -28,6 +28,69 @@ from g3e_data_engine.utils.statistics import DatasetStats, RejectionCounts, buil
 from g3e_data_engine.utils.metadata import ImageMetadata, write_metadata, bump_version
 
 
+def _rejection_breakdown(rejected: list[ValidationResult]) -> dict[str, int]:
+    """
+    Quick, human-readable tally of WHY images were rejected, printed live
+    during the Validate stage rather than only being discoverable later by
+    reading metadata/stats.json. A real production run once silently
+    dropped ~93% of downloaded images to an overly strict resolution check
+    with no visibility into why until someone went digging — this is the
+    fix for the "why" being invisible, independent of what the actual
+    threshold values are set to.
+    """
+    counts: dict[str, int] = {}
+    for v in rejected:
+        for reason in v.reasons:
+            if "resolution" in reason:
+                key = "low_resolution"
+            elif "blurry" in reason:
+                key = "blurry"
+            elif "dark" in reason or "bright" in reason:
+                key = "dark_or_bright"
+            elif "corrupted" in reason:
+                key = "corrupted"
+            else:
+                key = "other"
+            counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def _percentile(values: list[float], pct: float) -> float:
+    if not values:
+        return 0.0
+    s = sorted(values)
+    idx = min(len(s) - 1, max(0, int(round(pct * (len(s) - 1)))))
+    return s[idx]
+
+
+def _measured_diagnostics(validations: list[ValidationResult], thresholds) -> str:
+    """
+    Actual MEASURED distributions of shorter-side and blur score across this
+    batch — accepted vs rejected — printed alongside the breakdown counts.
+
+    This exists because guessing at a threshold from first principles (as
+    an earlier version of this engine did — twice) isn't a substitute for
+    looking at what a real source's images actually look like. These
+    numbers are what should drive any further tuning of
+    configs/processing.yaml, not another guess.
+    """
+    shorter_sides = [min(v.width, v.height) for v in validations if v.width and v.height]
+    blur_scores = [v.blur_score for v in validations if v.width and v.height]
+
+    if not shorter_sides:
+        return "    (no readable images to measure)"
+
+    lines = [
+        f"    measured shorter-side: p10={_percentile(shorter_sides, 0.10):.0f} "
+        f"median={_percentile(shorter_sides, 0.50):.0f} p90={_percentile(shorter_sides, 0.90):.0f} "
+        f"(threshold: min_shorter_side={thresholds.min_shorter_side})",
+        f"    measured blur score:   p10={_percentile(blur_scores, 0.10):.1f} "
+        f"median={_percentile(blur_scores, 0.50):.1f} p90={_percentile(blur_scores, 0.90):.1f} "
+        f"(threshold: blur_threshold={thresholds.blur_threshold})",
+    ]
+    return "\n".join(lines)
+
+
 @dataclass
 class PipelineRunResult:
     allocation: AllocationResult
@@ -80,6 +143,10 @@ class Pipeline:
         hf_private: bool = True,
         work_dir: str | Path = "datasets",
     ) -> PipelineRunResult:
+        from g3e_data_engine import __version__
+
+        print(f"g3e-data-engine v{__version__}")
+
         allocation = self.allocator.allocate(
             total_images=total_images,
             overrides=priority_overrides,
@@ -123,6 +190,18 @@ class Pipeline:
         validations = validate_batch(downloaded_paths, self.config.processing.image)
         accepted_paths = [v.path for v in validations if v.accepted]
         print(f"    accepted: {len(accepted_paths)} / {len(validations)}")
+        if validations:
+            print(_measured_diagnostics(validations, self.config.processing.image))
+        rejected_now = [v for v in validations if not v.accepted]
+        if rejected_now:
+            breakdown = _rejection_breakdown(rejected_now)
+            print(f"    rejected breakdown: {breakdown}")
+            if len(accepted_paths) < 0.5 * len(validations):
+                print(
+                    "    [warning] most downloaded images were rejected — compare the measured "
+                    "percentiles above against configs/processing.yaml's thresholds to see which "
+                    "check is actually doing the rejecting before changing anything."
+                )
 
         print("\n=== STAGE: Deduplicate ===")
         dedup_result = find_duplicates(accepted_paths, self.config.processing.duplicates)

@@ -9,8 +9,8 @@
 # proportionally to shares, then capped per-class by `max_per_class` and by
 # each source's own max_images in datasets.yaml.
 budget:
-  total_images: 6000          # overall v1 ceiling (<= global_max_images in datasets.yaml)
-  max_per_class: 2500         # no single class can eat the whole budget
+  total_images: 6000          # default request size — modest on purpose; raise per-call via total_images=
+  max_per_class: 20000        # raised so a large total_images (e.g. up to the 50000 ceiling) isn't needlessly clamped
   min_per_class: 150          # try to guarantee at least this many per class if available
 
 tier_weights:

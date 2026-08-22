@@ -14,11 +14,12 @@ unverified license).
 """
 from __future__ import annotations
 
-from g3e_data_engine import load_engine_config
+from g3e_data_engine import __version__, load_engine_config
 from g3e_data_engine.core.preflight import run_preflight
 
 
 def main() -> int:
+    print(f"g3e-data-engine v{__version__}")
     cfg = load_engine_config()
     report = run_preflight(cfg)
     print(report.render())

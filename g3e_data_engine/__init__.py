@@ -14,17 +14,18 @@ Public surface (what other repos, e.g. g3e-vision-dataset, should import):
 Everything else under g3e_data_engine.* is an implementation detail and may
 change between minor versions without notice.
 """
-from g3e_data_engine.core.config import EngineConfig, load_engine_config
+from g3e_data_engine.core.config import EngineConfig, load_engine_config, clear_config_cache
 from g3e_data_engine.core.priority import PriorityAllocator, ClassBudget
 from g3e_data_engine.core.pipeline import Pipeline, PipelineRunResult
 
 __all__ = [
     "EngineConfig",
     "load_engine_config",
+    "clear_config_cache",
     "PriorityAllocator",
     "ClassBudget",
     "Pipeline",
     "PipelineRunResult",
 ]
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
