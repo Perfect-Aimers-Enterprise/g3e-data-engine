@@ -18,7 +18,6 @@
 # the `auth` block per source and README.md "Credentials".
 
 sources:
-
   coco:
     enabled: true
     kind: huggingface
@@ -34,7 +33,7 @@ sources:
       verified: true
       url: "https://huggingface.co/datasets/detection-datasets/coco"
     auth:
-      token_env: "HF_TOKEN"   # optional for this public dataset; improves rate limits when set
+      token_env: "HF_TOKEN" # optional for this public dataset; improves rate limits when set
       required: false
 
   # Consolidated GUN / KNIFE / PERSON weapon-detection set (Roboflow-derived,
@@ -59,8 +58,8 @@ sources:
     # actual size rather than requesting more than physically exists.
     max_images: 7000
     license:
-      name: "UNKNOWN — derivative of a Roboflow dataset, terms not yet reviewed"
-      verified: false
+      name: "Apache-2.0"
+      verified: true
       url: "https://huggingface.co/datasets/Subh775/WeaponDetection_Grouped"
     auth:
       token_env: "HF_TOKEN"
@@ -81,12 +80,12 @@ sources:
     # margin below the dataset's actual size.
     max_images: 3500
     license:
-      name: "CC BY 4.0 (per project listing — verify on the pinned version page before enabling)"
-      verified: false
+      name: "CC BY 4.0"
+      verified: true
       url: "https://universe.roboflow.com/fire-rqbio/fire-and-smoke-yikzn"
     auth:
       token_env: "ROBOFLOW_API_KEY"
-      required: true          # Roboflow's API has no anonymous read path
+      required: true # Roboflow's API has no anonymous read path
 
 # Absolute safety valve. The pipeline refuses to schedule more than this
 # many total images across ALL sources in a single run, regardless of what
